@@ -158,6 +158,19 @@ def toutes_metadonnees_rudi(conf: dict) -> list[dict]:
     return writer.filter_metadata_list({})
 
 
+def lister_organisations(conf: dict) -> list[dict]:
+    """Liste les organisations déclarées sur le nœud RUDI local.
+
+    Point d'entrée public minimal autour de ``RudiNodeWriter.organization_list``
+    (dicts ``organization_id``/``organization_name``/``organization_caption``/
+    ``organization_summary`` …) : expose la liste sans rendre ``_creer_writer``
+    public. Nécessaire au rattrapage des organisations d'un nœud déjà peuplé lors
+    d'un raccordement portail (``moissonneur-ods --raccorder-portail
+    --scenario peuple``).
+    """
+    return _creer_writer(conf).organization_list
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,

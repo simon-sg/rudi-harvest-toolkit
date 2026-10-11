@@ -3,8 +3,13 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-from rudi_harvest_toolkit.rudi_client import charger_conf_rudi, email_par_defaut
+from rudi_harvest_toolkit.rudi_client import (
+    charger_conf_rudi,
+    email_par_defaut,
+    lister_organisations,
+)
 
 
 class TestChargerConfRudi(unittest.TestCase):
@@ -32,6 +37,16 @@ class TestEmailParDefaut(unittest.TestCase):
 
     def test_unique_par_nom(self):
         self.assertNotEqual(email_par_defaut("Insee"), email_par_defaut("OEB"))
+
+
+class TestListerOrganisations(unittest.TestCase):
+    def test_expose_organization_list_sans_writer_public(self):
+        orgs = [{"organization_id": "org-1", "organization_name": "Rennes Métropole"}]
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.organization_list = orgs
+            self.assertEqual(lister_organisations(conf), orgs)
+        creer.assert_called_once_with(conf)
 
 
 if __name__ == "__main__":
