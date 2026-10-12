@@ -158,17 +158,31 @@ def toutes_metadonnees_rudi(conf: dict) -> list[dict]:
     return writer.filter_metadata_list({})
 
 
-def lister_organisations(conf: dict) -> list[dict]:
+def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
     """Liste les organisations déclarées sur le nœud RUDI local.
 
-    Point d'entrée public minimal autour de ``RudiNodeWriter.organization_list``
-    (dicts ``organization_id``/``organization_name``/``organization_caption``/
-    ``organization_summary`` …) : expose la liste sans rendre ``_creer_writer``
-    public. Nécessaire au rattrapage des organisations d'un nœud déjà peuplé lors
-    d'un raccordement portail (``moissonneur-ods --raccorder-portail
-    --scenario peuple``).
+    Sans ``statut`` : point d'entrée public minimal autour de
+    ``RudiNodeWriter.organization_list`` (dicts ``organization_id``/
+    ``organization_name``/``organization_caption``/``organization_summary`` …) —
+    expose la liste sans rendre ``_creer_writer`` public. Nécessaire au rattrapage
+    des organisations d'un nœud déjà peuplé lors d'un raccordement portail
+    (``moissonneur-ods --raccorder-portail --scenario peuple``).
+
+    Avec ``statut`` (ex. ``"VALIDATED"``, ``"DRAFT"``...) : filtre côté nœud sur
+    ``organization_status`` — requête HTTP directe (pas via ``organization_list``,
+    qui ne supporte pas ce filtre), car ce champ n'est renseigné que par le
+    **rapport portail** reçu par le nœud quand un humain valide l'organisation
+    dans l'UI Strukture (``PUT {noeud}/organizations/:id/report`` côté
+    rudi-catalog, ``reportController.treatOrgnizationsReports``) — c'est le
+    mécanisme de détection utilisé pour le renvoi automatique des ressources
+    bloquées par une organisation en attente de validation.
     """
-    return _creer_writer(conf).organization_list
+    if statut is None:
+        return _creer_writer(conf).organization_list
+    reponse = session.get(f"{url_catalog(conf)}/v1/organizations",
+                          params={"organization_status": statut}, timeout=30)
+    reponse.raise_for_status()
+    return reponse.json()
 
 
 def publier_dataset(
