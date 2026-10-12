@@ -9,8 +9,10 @@ from rudi_harvest_toolkit.rudi_client import (
     _media_file_deja_complet,
     charger_conf_rudi,
     demander_creation_organisation,
+    demander_mise_a_jour_organisation,
     email_par_defaut,
     lister_organisations,
+    supprimer_dataset_portail,
 )
 
 
@@ -137,6 +139,101 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             sess.post.side_effect = [rep_token, rep_create]
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
         self.assertEqual(sess.post.call_count, 2)
+
+
+class TestDemanderMiseAJourOrganisation(unittest.TestCase):
+    ORG = {"organization_id": "uuid-portail", "organization_name": "MyDataBall",
+           "organization_summary": "Producteur de données ouvertes."}
+
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(demander_mise_a_jour_organisation(conf, self.ORG))
+        sess.put.assert_not_called()
+        sess.post.assert_not_called()
+
+    def test_succes_emet_un_put_vers_organizations_request(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_update = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.put.return_value = rep_update
+            self.assertTrue(demander_mise_a_jour_organisation(conf, self.ORG))
+        sess.post.assert_called_once()  # token uniquement
+        args, kwargs = sess.put.call_args
+        self.assertEqual(args[0], "http://portail.test/strukture/v1/organizations/request")
+        self.assertEqual(kwargs["json"], self.ORG)  # id portail conservé (jamais réassigné)
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+
+    def test_auth_portail_echoue_false_sans_put(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+        sess.put.assert_not_called()
+
+    def test_mise_a_jour_refusee_par_le_portail_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_update = mock.Mock(status_code=400, text="description too long")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.put.return_value = rep_update
+            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+
+
+class TestSupprimerDatasetPortail(unittest.TestCase):
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(supprimer_dataset_portail(conf, "gid-1"))
+        sess.delete.assert_not_called()
+        sess.post.assert_not_called()
+
+    def test_succes_emet_un_delete_vers_kalim_resources(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertTrue(supprimer_dataset_portail(conf, "gid-1"))
+        args, kwargs = sess.delete.call_args
+        self.assertEqual(args[0], "http://portail.test/kalim/v1/resources/gid-1")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+
+    def test_401_renouvelle_le_token_et_rejoue(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_401 = mock.Mock(status_code=401, text="Unauthorized")
+        rep_ok = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.side_effect = [rep_401, rep_ok]
+            self.assertTrue(supprimer_dataset_portail(conf, "gid-1"))
+        self.assertEqual(sess.post.call_count, 2)  # token initial + renouvellement
+        self.assertEqual(sess.delete.call_count, 2)
+
+    def test_echec_404_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=404, text="Not Found")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertFalse(supprimer_dataset_portail(conf, "gid-1"))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `email_par_defaut()`. |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `email_par_defaut()`. |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 
 ## Organisations productrices et validation portail
@@ -72,17 +72,32 @@ source natif (`host:4030`) depuis l'intérieur de leurs conteneurs. Sans
 l'appel échoue **silencieusement** (simple log côté Java, jamais une erreur visible) — voir
 la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
 
-### TODOs connus (pas encore implémentés — ne pas les tenir pour résolus)
+### `demander_mise_a_jour_organisation(conf, organization)`
 
-- **Mise à jour** d'une organisation existante (enrichissement caption/summary) : passe
-  encore par un `PUT /organizations` direct sur le nœud, sans validation portail. Devrait
-  utiliser `PUT {portail}/strukture/v1/organizations/request` (même principe, verbe
-  différent) — jamais fait à ce jour.
-- **Suppression** d'un dataset : `supprimer_dataset()` ne touche que le nœud. Si Kalim a
-  déjà moissonné la ressource, elle reste résiduelle côté portail. La bonne méthode existe
-  déjà dans `moissonneur-ods` (`supprimer_ressources_portail()`, `DELETE
-  {portail}/kalim/v1/resources/{global_id}`) mais n'a jamais été portée dans ce toolkit
-  pour que `moissonneuse-batteuse` en bénéficie aussi.
+Met à jour une organisation **déjà connue du portail** (enrichissement
+`organization_summary`/caption d'un producteur préexistant) via
+`PUT {url_portail}/strukture/v1/organizations/request` (même compte ROBOT que la création,
+seul le verbe change). Appelé automatiquement par `publier_dataset()` après un
+enrichissement d'organisation, en complément du `PUT /organizations` sur le nœud — sans
+cet appel, l'UI Strukture conserve l'ancienne description (le `PUT` nœud ne touche que la
+copie locale).
+
+Contrairement à la création, la mise à jour portail est appliquée **directement** (aucune
+tâche BPMN côté Strukture) ; `organization_summary` (description) doit être non vide et
+≤ 800 caractères sinon ``400``. L'`organization_id` doit être celui **assigné par le
+portail** (adopté à la création) : un id purement local répond `404`. **Best-effort**,
+retourne ``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
+
+### `supprimer_dataset(conf, global_id)` vs `supprimer_dataset_portail(conf, global_id)`
+
+`supprimer_dataset()` ne supprime que sur le **nœud**. Si Kalim a déjà moissonné la
+ressource, celle-ci reste résiduelle dans le catalogue du portail : la supprimer aussi
+côté portail nécessite `supprimer_dataset_portail()`
+(`DELETE {url_portail}/kalim/v1/resources/{global_id}`, authentification ROBOT, **DELETE
+asynchrone** traité par le planificateur Kalim — laisser quelques minutes avant de
+conclure à un blocage). Portée depuis `moissonneur-ods` pour être partagée, notamment par
+`moissonneuse-batteuse`. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` =
+pas de `url_portail`, aucune requête).
 
 ## Découplage
 

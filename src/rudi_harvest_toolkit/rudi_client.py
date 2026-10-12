@@ -290,6 +290,67 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
         return None
 
 
+def demander_mise_a_jour_organisation(conf: dict, organization: dict) -> bool | None:
+    """Demande la mise à jour d'une organisation productrice **auprès du portail**
+    (``PUT {url_portail}/strukture/v1/organizations/request``, rôle PROVIDER requis —
+    même compte ROBOT que ``demander_creation_organisation()``, seul le verbe change).
+
+    À la différence du ``PUT /organizations`` sur le **nœud** (que ``publier_dataset()``
+    fait par ailleurs pour que la copie locale de l'organisation, donc le ``producer`` de
+    la ressource publiée, reflète l'enrichissement immédiatement), cet appel met à jour
+    l'organisation **côté portail** — sans lui, un enrichissement de ``organization_summary``
+    (ou ``organization_caption``) reste invisible dans l'UI Strukture : le portail ne
+    connaît que l'état qu'on lui a soumis à la création. C'est le bug corrigé ici (voir
+    le TODO « Mise à jour » du README).
+
+    Contrairement à la création, la mise à jour portail est appliquée **directement**
+    (aucune tâche BPMN ni validation modérateur côté Strukture — vérifié dans
+    ``OrganizationServiceImpl.updateOrganization``). La seule contrainte de champ est
+    portée par ``DescriptionProcessor`` : ``organization_summary`` (= ``description``
+    côté portail) doit être **non vide et ≤ 800 caractères**, sinon le portail répond
+    ``400 Bad Request``.
+
+    La mise à jour ne peut porter que sur une organisation **déjà connue du portail** :
+    l'``organization_id`` transmis doit être celui que le portail a assigné (adopté à la
+    création via ``demander_creation_organisation()``) — un id purement local (organisation
+    créée seulement sur le nœud, jamais soumise) répond ``404``.
+
+    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
+    ``False`` en cas d'échec (auth portail, refus, réseau ; journalisé), ``True`` si le
+    portail a accepté la mise à jour.
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de mise à jour d'organisation envoyée ({e})")
+        return False
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    corps = {
+        "organization_id": organization.get("organization_id") or str(uuid.uuid4()),
+        "organization_name": organization.get("organization_name", ""),
+    }
+    if organization.get("organization_summary"):
+        corps["organization_summary"] = organization["organization_summary"]
+    try:
+        r = session.put(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request",
+                        json=corps, headers=headers, timeout=30)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : mise à jour d'organisation refusée par le portail "
+                  f"({r.status_code}) : {r.text[:200]}")
+            return False
+        print(f"  [RUDI] mise à jour portail envoyée pour l'organisation « {corps['organization_name']} »")
+        return True
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la mise à jour portail de l'organisation : {e}")
+        return False
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,
@@ -323,15 +384,18 @@ def publier_dataset(
     if org_existante:
         # Si l'org existante n'a pas de summary mais l'entrant en a, enrichir
         if not org_existante.get("organization_summary") and org.get("organization_summary"):
+            org_mise_a_jour = {**org_existante,
+                               "organization_caption": org.get("organization_caption", ""),
+                               "organization_summary": org.get("organization_summary", "")}
             try:
-                org_mise_a_jour = {**org_existante,
-                                   "organization_caption": org.get("organization_caption", ""),
-                                   "organization_summary": org.get("organization_summary", "")}
                 writer.connector.put_catalog("organizations", org_mise_a_jour)
                 org_existante = org_mise_a_jour
                 print(f"  [RUDI] organisation « {org_name} » enrichie (caption + summary)")
             except Exception as e:
                 print(f"  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « {org_name} » : {e}")
+            # Propager l'enrichissement au portail (sinon l'UI Strukture garde l'ancienne
+            # description : le PUT nœud ci-dessus ne touche que la copie locale). Best-effort.
+            demander_mise_a_jour_organisation(conf, org_mise_a_jour)
         rudi_metadata["producer"] = org_existante
     elif "organization_id" not in org:
         # L'UUID utilisé doit être celui que le portail assigne (il ignore toute valeur
@@ -494,4 +558,57 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
         return True
     except Exception as e:
         print(f"  [RUDI] Erreur suppression {global_id[:12]}… : {e}")
+        return False
+
+
+def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
+    """Supprime une ressource **côté portail** (Kalim) par son ``global_id``
+    (``DELETE {url_portail}/kalim/v1/resources/{global_id}``, ``ResourcesController``
+    côté Kalim, même authentification ROBOT que la publication).
+
+    Porté depuis ``moissonneur-ods/portail_client.py::supprimer_ressources_portail()``
+    pour être partagé (voir le TODO « Suppression » du README) : ``supprimer_dataset()``
+    ne supprime que sur le **nœud**, jamais côté portail — si Kalim a déjà moissonné la
+    ressource, celle-ci reste résiduelle dans le catalogue du portail. Cette fonction
+    complète l'opération.
+
+    **Asynchrone** comme la publication : la requête ne crée qu'une demande d'intégration
+    de type DELETE, traitée ensuite par le planificateur Kalim — pas une suppression
+    instantanée (laisser quelques minutes avant de conclure à un blocage, cf. mémoire
+    ``project_kalim_scheduler_lenteur``). Un ``401`` (token expiré) est rejoué une fois
+    avec un token renouvelé.
+
+    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
+    ``False`` en cas d'échec (auth portail, refus, réseau ; journalisé), ``True`` si le
+    portail a accepté la demande de suppression.
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression portail de la ressource ({e})")
+        return False
+
+    def _delete(jeton: str):
+        return session.delete(f"{url_portail.rstrip('/')}/kalim/v1/resources/{global_id}",
+                              headers={"Authorization": f"Bearer {jeton}"}, timeout=30)
+
+    try:
+        r = _delete(token)
+        if r.status_code == 401:
+            token = _token_portail(url_portail, usr_portail, pwd_portail)
+            r = _delete(token)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : suppression portail de {global_id[:12]}… refusée "
+                  f"({r.status_code}) : {r.text[:200]}")
+            return False
+        print(f"  [RUDI] suppression portail demandée pour {global_id[:12]}… (traitement Kalim asynchrone).")
+        return True
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la suppression portail de {global_id[:12]}… : {e}")
         return False
