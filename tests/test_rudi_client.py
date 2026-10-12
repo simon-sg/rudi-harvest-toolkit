@@ -8,6 +8,7 @@ from unittest import mock
 from rudi_harvest_toolkit.rudi_client import (
     _media_file_deja_complet,
     charger_conf_rudi,
+    demander_creation_organisation,
     email_par_defaut,
     lister_organisations,
 )
@@ -87,6 +88,58 @@ class TestMediaFileDejaComplet(unittest.TestCase):
         # file_size ni checksum tant que publier_dataset() ne l'a pas uploadé.
         media = {"media_type": "FILE", "connector": {"url": "À_RENSEIGNER_APRES_DEPOT_SUR_NOEUD"}}
         self.assertFalse(_media_file_deja_complet(media))
+
+
+class TestDemanderCreationOrganisation(unittest.TestCase):
+    ORG = {"organization_id": "org-1", "organization_name": "MyDataBall",
+           "organization_summary": "Producteur de données ouvertes."}
+
+    def test_sans_url_portail_no_op(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+        sess.post.assert_not_called()
+
+    def test_succes_cree_puis_rattache(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_create = mock.Mock(status_code=200)
+        rep_create.json.return_value = "org-uuid-1"
+        rep_attach = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = [rep_token, rep_create, rep_attach]
+            resultat = demander_creation_organisation(conf, self.ORG)
+        self.assertEqual(resultat, "org-uuid-1")
+        self.assertEqual(sess.post.call_count, 3)
+        # Appel 2 : demande de création
+        args_create, kwargs_create = sess.post.call_args_list[1]
+        self.assertEqual(args_create[0], "http://portail.test/strukture/v1/organizations/request")
+        self.assertEqual(kwargs_create["json"]["organization_id"], "org-1")
+        self.assertEqual(kwargs_create["headers"]["Authorization"], "Bearer tok123")
+        # Appel 3 : demande de rattachement, avec l'uuid retourné par la création
+        args_attach, _ = sess.post.call_args_list[2]
+        self.assertEqual(args_attach[0], "http://portail.test/strukture/v1/linked-producers/request/org-uuid-1")
+
+    def test_auth_portail_echoue_retourne_none_sans_autre_appel(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+        sess.post.assert_called_once()  # seule la tentative de token, rien après
+
+    def test_creation_refusee_par_le_portail_naboutit_pas_au_rattachement(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_create = mock.Mock(status_code=403, text="Forbidden")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = [rep_token, rep_create]
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+        self.assertEqual(sess.post.call_count, 2)  # jamais de 3e appel (linked-producers)
 
 
 if __name__ == "__main__":

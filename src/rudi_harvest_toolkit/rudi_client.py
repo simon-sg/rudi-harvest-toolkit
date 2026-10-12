@@ -195,6 +195,78 @@ def _media_file_deja_complet(media: dict) -> bool:
     return bool(media.get("file_size")) and bool((media.get("checksum") or {}).get("hash"))
 
 
+def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
+    """Token OAuth2 (client_credentials) auprès du **portail** (pas le nœud), avec les
+    identifiants du compte ROBOT — même pattern que
+    ``moissonneur-ods/portail_client.py::obtenir_token_robot()``, éprouvé contre le
+    portail ROOB local. Lève une exception si le portail refuse (401 ``invalid_client``
+    notamment, si ce compte n'est pas enregistré côté ACL comme client OAuth2 — vérifier
+    avec l'équipe qui a fourni les identifiants dans ce cas)."""
+    r = session.post(
+        f"{url_portail}/oauth2/token",
+        auth=(usr, pwd),
+        data={"grant_type": "client_credentials", "username": usr, "password": pwd},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+
+def demander_creation_organisation(conf: dict, organization: dict) -> str | None:
+    """Demande la création d'une nouvelle organisation productrice **auprès du portail**
+    (``POST {url_portail}/strukture/v1/organizations/request``, rôle PROVIDER requis —
+    exactement celui du compte ROBOT du nœud), puis son rattachement à notre provider
+    (``POST .../linked-producers/request/{uuid}``).
+
+    À la différence d'un simple ``PUT /organizations`` sur le **nœud** (ce que ce module
+    fait par ailleurs pour que la ressource publiée référence un ``organization_id``
+    valide dès maintenant, sans attendre), cet appel déclenche une vraie tâche BPMN dans
+    la file d'un modérateur portail — c'est la condition pour qu'``organization_status``
+    passe un jour à ``VALIDATED`` (champ renseigné sur le nœud uniquement par le *rapport*
+    que le portail renvoie après validation humaine, jamais par le nœud lui-même). Sans
+    cet appel, une organisation créée seulement sur le nœud n'est jamais soumise à
+    validation et reste invisible du portail — c'est le bug corrigé ici.
+
+    Nécessite ``conf["url_portail"]`` (optionnel — absent : no-op, retourne ``None``,
+    comportement historique sans portail intégré préservé). Toujours **best-effort** :
+    ne lève jamais, journalise et retourne ``None`` en cas d'échec — ne bloque jamais la
+    publication du dataset lui-même, qui doit pouvoir avancer même si le portail est
+    indisponible ou si l'authentification portail échoue.
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        token = _token_portail(url_portail, conf["usr"], conf["pwd"])
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande de validation d'organisation envoyée ({e})")
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    corps = {
+        "organization_id": organization["organization_id"],
+        "organization_name": organization.get("organization_name", ""),
+    }
+    if organization.get("organization_summary"):
+        corps["organization_summary"] = organization["organization_summary"]
+    try:
+        r = session.post(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request",
+                          json=corps, headers=headers, timeout=30)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : demande de création d'organisation refusée par le portail "
+                  f"({r.status_code}) : {r.text[:200]}")
+            return None
+        org_uuid = r.json()
+        r2 = session.post(f"{url_portail.rstrip('/')}/strukture/v1/linked-producers/request/{org_uuid}",
+                           headers=headers, timeout=30)
+        if r2.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : demande de rattachement provider refusée ({r2.status_code}) : {r2.text[:200]}")
+        print(f"  [RUDI] demande de validation portail envoyée pour l'organisation « {corps['organization_name']} » (uuid={org_uuid})")
+        return org_uuid
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la demande de validation portail de l'organisation : {e}")
+        return None
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,
@@ -240,6 +312,7 @@ def publier_dataset(
         rudi_metadata["producer"] = org_existante
     elif "organization_id" not in org:
         org["organization_id"] = str(uuid.uuid4())
+        demander_creation_organisation(conf, org)
 
     # theme : vérifie que la valeur est dans les thèmes acceptés par ce nœud
     themes_valides = writer.themes or []
