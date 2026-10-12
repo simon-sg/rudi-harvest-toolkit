@@ -100,27 +100,24 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
         sess.post.assert_not_called()
 
-    def test_succes_cree_puis_rattache(self):
+    def test_succes_retourne_luuid_du_portail_meme_different_de_celui_envoye(self):
+        """Vérifié en conditions réelles contre le portail ROOB local : le portail
+        assigne son propre UUID, différent de celui qu'on lui propose dans le corps."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
         rep_create = mock.Mock(status_code=200)
-        rep_create.json.return_value = "org-uuid-1"
-        rep_attach = mock.Mock(status_code=200)
+        rep_create.json.return_value = "uuid-assigne-par-le-portail"
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = [rep_token, rep_create, rep_attach]
+            sess.post.side_effect = [rep_token, rep_create]
             resultat = demander_creation_organisation(conf, self.ORG)
-        self.assertEqual(resultat, "org-uuid-1")
-        self.assertEqual(sess.post.call_count, 3)
-        # Appel 2 : demande de création
+        self.assertEqual(resultat, "uuid-assigne-par-le-portail")
+        self.assertEqual(sess.post.call_count, 2)  # jamais de 3e appel (linked-producers, inutile)
         args_create, kwargs_create = sess.post.call_args_list[1]
         self.assertEqual(args_create[0], "http://portail.test/strukture/v1/organizations/request")
-        self.assertEqual(kwargs_create["json"]["organization_id"], "org-1")
+        self.assertEqual(kwargs_create["json"]["organization_id"], "org-1")  # envoyé, mais ignoré côté portail
         self.assertEqual(kwargs_create["headers"]["Authorization"], "Bearer tok123")
-        # Appel 3 : demande de rattachement, avec l'uuid retourné par la création
-        args_attach, _ = sess.post.call_args_list[2]
-        self.assertEqual(args_attach[0], "http://portail.test/strukture/v1/linked-producers/request/org-uuid-1")
 
     def test_auth_portail_echoue_retourne_none_sans_autre_appel(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
@@ -130,7 +127,7 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
         sess.post.assert_called_once()  # seule la tentative de token, rien après
 
-    def test_creation_refusee_par_le_portail_naboutit_pas_au_rattachement(self):
+    def test_creation_refusee_par_le_portail_retourne_none(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
@@ -139,7 +136,7 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = [rep_token, rep_create]
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
-        self.assertEqual(sess.post.call_count, 2)  # jamais de 3e appel (linked-producers)
+        self.assertEqual(sess.post.call_count, 2)
 
 
 if __name__ == "__main__":

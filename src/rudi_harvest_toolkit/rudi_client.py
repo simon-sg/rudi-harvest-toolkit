@@ -215,8 +215,7 @@ def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
 def demander_creation_organisation(conf: dict, organization: dict) -> str | None:
     """Demande la création d'une nouvelle organisation productrice **auprès du portail**
     (``POST {url_portail}/strukture/v1/organizations/request``, rôle PROVIDER requis —
-    exactement celui du compte ROBOT du nœud), puis son rattachement à notre provider
-    (``POST .../linked-producers/request/{uuid}``).
+    exactement celui du compte ROBOT du nœud).
 
     À la différence d'un simple ``PUT /organizations`` sur le **nœud** (ce que ce module
     fait par ailleurs pour que la ressource publiée référence un ``organization_id``
@@ -227,8 +226,32 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     cet appel, une organisation créée seulement sur le nœud n'est jamais soumise à
     validation et reste invisible du portail — c'est le bug corrigé ici.
 
+    **Le portail assigne son propre UUID, sans tenir compte de celui qu'on lui propose**
+    dans le corps de la requête (vérifié en conditions réelles contre le portail ROOB
+    local — un `organization_id` différent de celui envoyé a été retourné). L'UUID
+    renvoyé par cette fonction est donc le seul à utiliser comme `organization_id` de
+    l'organisation — c'est à **l'appelant** de l'adopter, pas de décider le sien avant
+    d'appeler cette fonction, sous peine qu'il ne corresponde jamais à ce que le portail
+    reportera plus tard au nœud.
+
+    Le rattachement au provider (`linked-producers/request`) n'est **volontairement pas**
+    demandé ici : confirmé en conditions réelles qu'il est généré automatiquement par le
+    portail à la suite de la demande de création (vérifié : une 2e tâche de rattachement
+    est apparue dans la file de modération sans action explicite de notre part) — un
+    appel explicite échoue d'ailleurs à ce stade (`400 "Organization is not in a valid
+    state"`, l'organisation n'étant pas encore validée).
+
     Nécessite ``conf["url_portail"]`` (optionnel — absent : no-op, retourne ``None``,
-    comportement historique sans portail intégré préservé). Toujours **best-effort** :
+    comportement historique sans portail intégré préservé). Authentification portail via
+    ``conf["usr_portail"]``/``conf["pwd_portail"]`` si présents, sinon repli sur
+    ``conf["usr"]``/``conf["pwd"]`` — **à ne pas confondre** : les identifiants manager du
+    **nœud** (compte local, ex. base SQLite du nœud) et les identifiants ROBOT du
+    **portail** (compte ACL/OAuth2) sont deux systèmes d'authentification distincts,
+    souvent différents (vérifié en local : `admin`/`admin` côté nœud, UUID+mot de passe
+    généré côté portail). Un `401 invalid_client` à ce stade indique typiquement que les
+    identifiants fournis ne sont que des identifiants nœud, jamais enregistrés côté ACL
+    portail comme client OAuth2 — à vérifier avec l'équipe ayant fourni les accès.
+    Toujours **best-effort** :
     ne lève jamais, journalise et retourne ``None`` en cas d'échec — ne bloque jamais la
     publication du dataset lui-même, qui doit pouvoir avancer même si le portail est
     indisponible ou si l'authentification portail échoue.
@@ -237,13 +260,17 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     if not url_portail:
         return None
     try:
-        token = _token_portail(url_portail, conf["usr"], conf["pwd"])
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande de validation d'organisation envoyée ({e})")
         return None
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # organization_id requis par le schéma mais ignoré par le portail (voir docstring) —
+    # une valeur jetable suffit, seul l'UUID retourné compte.
     corps = {
-        "organization_id": organization["organization_id"],
+        "organization_id": organization.get("organization_id") or str(uuid.uuid4()),
         "organization_name": organization.get("organization_name", ""),
     }
     if organization.get("organization_summary"):
@@ -256,10 +283,6 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
                   f"({r.status_code}) : {r.text[:200]}")
             return None
         org_uuid = r.json()
-        r2 = session.post(f"{url_portail.rstrip('/')}/strukture/v1/linked-producers/request/{org_uuid}",
-                           headers=headers, timeout=30)
-        if r2.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : demande de rattachement provider refusée ({r2.status_code}) : {r2.text[:200]}")
         print(f"  [RUDI] demande de validation portail envoyée pour l'organisation « {corps['organization_name']} » (uuid={org_uuid})")
         return org_uuid
     except Exception as e:
@@ -311,8 +334,12 @@ def publier_dataset(
                 print(f"  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « {org_name} » : {e}")
         rudi_metadata["producer"] = org_existante
     elif "organization_id" not in org:
-        org["organization_id"] = str(uuid.uuid4())
-        demander_creation_organisation(conf, org)
+        # L'UUID utilisé doit être celui que le portail assigne (il ignore toute valeur
+        # qu'on lui propose, voir demander_creation_organisation()) — appeler la demande
+        # AVANT de décider l'organization_id, jamais l'inverse, sinon le "rapport" de
+        # validation que le portail renverra plus tard au nœud ne pourra jamais se
+        # raccrocher à la bonne organisation.
+        org["organization_id"] = demander_creation_organisation(conf, org) or str(uuid.uuid4())
 
     # theme : vérifie que la valeur est dans les thèmes acceptés par ce nœud
     themes_valides = writer.themes or []
