@@ -26,18 +26,63 @@ JDD moissonné, ex. "MyDataBall" — pas le producteur/nœud harvesteur lui-mêm
 portail (Strukture) : `organization_status` sur le nœud n'est renseigné que par le
 *rapport* que le portail renvoie après qu'un modérateur a validé l'organisation dans son
 UI — jamais par le nœud lui-même. Sans demande explicite au portail, l'organisation créée
-reste invisible du workflow de modération.
+reste invisible du workflow de modération, et `organization_status` reste vide
+indéfiniment.
 
-`demander_creation_organisation(conf, organization)` comble ce manque : si
-`conf["url_portail"]` est renseigné (clé optionnelle de `rudi_node.json`, en plus de
-`url`/`url_catalog`/`usr`/`pwd`), elle obtient un token OAuth2 auprès du **portail** avec
-les identifiants du compte ROBOT (rôle `PROVIDER` requis côté Strukture — c'est le rôle
-normal d'un compte nœud), puis appelle `POST {url_portail}/strukture/v1/organizations/request`
-(crée une tâche BPMN de modération) et `POST .../linked-producers/request/{uuid}`
-(rattachement à notre provider). Appelée automatiquement par `publier_dataset()` dès
-qu'une nouvelle organisation est créée. **Best-effort** : sans `url_portail`, ou en cas
-d'échec d'authentification/réseau, ne bloque jamais la publication du dataset — journalise
-un avertissement et continue.
+La méthode ci-dessous a été **validée de bout en bout** (publication → demande →
+validation humaine via un compte animateur → `organization_status`/`linked_producer_status`
+= `VALIDATED` sur le nœud) : c'est la méthode **par défaut** à réutiliser dans tous les
+pipelines, pas un cas particulier.
+
+### Règles (apprises par le test réel, à appliquer par défaut)
+
+1. **Ordre des UUID : demander AVANT de décider `organization_id`.** Le portail assigne son
+   propre UUID et ignore celui qu'on lui propose dans le corps de la requête. Il faut donc
+   appeler `demander_creation_organisation()` **avant** de fixer `organization_id`, et
+   adopter l'UUID **retourné** — jamais l'inverse, sinon le rapport de validation que le
+   portail renverra plus tard au nœud ne pourra pas se raccrocher à la bonne organisation.
+   (C'est exactement ce que fait `publier_dataset()`.)
+2. **Ne pas appeler `linked-producers/request` explicitement.** Le portail génère
+   automatiquement la tâche de rattachement du provider à la suite de la demande de
+   création (vérifié : une 2e tâche apparaît dans la file de modération sans action de
+   notre part). Un appel explicite à ce stade échoue (`400 "Organization is not in a valid
+   state"`, l'organisation n'étant pas encore validée).
+3. **Identifiants nœud ≠ identifiants portail.** Le login/mot de passe manager du **nœud**
+   (compte local, ex. base SQLite du nœud — `admin`/`admin` en local) et les identifiants
+   ROBOT du **portail** (compte ACL/OAuth2, ex. UUID + mot de passe généré) sont deux
+   systèmes d'authentification **totalement distincts**. Ils se configuent séparément :
+   `usr`/`pwd` pour le nœud, `usr_portail`/`pwd_portail` pour le portail (s'ils manquent,
+   repli sur `usr`/`pwd`). Un `401 invalid_client` signale typiquement qu'on a fourni des
+   identifiants nœud, jamais enregistrés côté ACL portail comme client OAuth2.
+
+### `demander_creation_organisation(conf, organization)`
+
+Si `conf["url_portail"]` est renseigné (clé optionnelle de `rudi_node.json`, en plus de
+`url`/`url_catalog`/`usr`/`pwd`), obtient un token OAuth2 auprès du **portail** avec les
+identifiants ROBOT (rôle `PROVIDER` requis côté Strukture — c'est le rôle normal d'un compte
+nœud), puis appelle `POST {url_portail}/strukture/v1/organizations/request`, qui crée une
+vraie tâche BPMN de modération. **Best-effort** : sans `url_portail`, ou en cas d'échec
+d'authentification/réseau, ne bloque jamais la publication du dataset — journalise un
+avertissement et continue.
+
+**Test en local** : les services portail `strukture` (envoi du rapport de validation),
+`kalim` (moissonnage) et `selfdata` (appariement) doivent pouvoir résoudre l'URL du nœud
+source natif (`host:4030`) depuis l'intérieur de leurs conteneurs. Sans
+`extra_hosts: ["host.docker.internal:host-gateway"]` dans `docker-compose-source.yml`,
+l'appel échoue **silencieusement** (simple log côté Java, jamais une erreur visible) — voir
+la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
+
+### TODOs connus (pas encore implémentés — ne pas les tenir pour résolus)
+
+- **Mise à jour** d'une organisation existante (enrichissement caption/summary) : passe
+  encore par un `PUT /organizations` direct sur le nœud, sans validation portail. Devrait
+  utiliser `PUT {portail}/strukture/v1/organizations/request` (même principe, verbe
+  différent) — jamais fait à ce jour.
+- **Suppression** d'un dataset : `supprimer_dataset()` ne touche que le nœud. Si Kalim a
+  déjà moissonné la ressource, elle reste résiduelle côté portail. La bonne méthode existe
+  déjà dans `moissonneur-ods` (`supprimer_ressources_portail()`, `DELETE
+  {portail}/kalim/v1/resources/{global_id}`) mais n'a jamais été portée dans ce toolkit
+  pour que `moissonneuse-batteuse` en bénéficie aussi.
 
 ## Découplage
 
