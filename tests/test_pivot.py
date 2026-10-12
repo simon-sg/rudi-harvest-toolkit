@@ -75,8 +75,12 @@ class TestConstruireRudiMetadata(unittest.TestCase):
         self.assertEqual(meta["dataset_dates"], {"created": "2024-01-01T00:00:00Z"})
 
     def test_dates_derivees_de_date_source_si_absentes(self):
+        # created ET updated, pas seulement updated : le nœud (checkDates côté
+        # rudi-catalog) donne un défaut nowISO() à `created` s'il est seul absent,
+        # ce qui écrase silencieusement la vraie date source — voir pivot.py.
         meta = self._construire(date_source="Wed, 12 Feb 2025 09:41:37 GMT")
-        self.assertEqual(meta["dataset_dates"], {"updated": "2025-02-12T09:41:37Z"})
+        self.assertEqual(meta["dataset_dates"],
+                         {"created": "2025-02-12T09:41:37Z", "updated": "2025-02-12T09:41:37Z"})
 
     def test_metadata_dates_optionnel(self):
         sans = self._construire()

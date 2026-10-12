@@ -249,6 +249,15 @@ def construire_rudi_metadata(
         dates = {}
         iso = parser_date_http(date_source)
         if iso:
+            # Les deux : le nœud (checkDates côté rudi-catalog, schéma Mongoose) donne
+            # un défaut `nowISO()` à `created` s'il est absent, puis compare created<=updated
+            # — avec seulement `updated` renseigné, `created` vaut l'heure d'écriture (now),
+            # pas la date source, et `updated` se retrouve lui-même écrasé/dérivé selon les cas.
+            # Ne fournir que l'une des deux dates expose ce défaut côté nœud ; en fournir les
+            # deux, identiques, documente honnêtement qu'on n'a qu'un seul repère temporel
+            # fiable côté source (ex. Opendatasoft n'expose que `modified`, jamais une vraie
+            # date de création) plutôt que de laisser le nœud deviner.
+            dates["created"] = iso
             dates["updated"] = iso
 
     if ajouter_medias_source:
