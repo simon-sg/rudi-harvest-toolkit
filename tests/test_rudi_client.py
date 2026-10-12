@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from rudi_harvest_toolkit.rudi_client import (
+    _media_file_deja_complet,
     charger_conf_rudi,
     email_par_defaut,
     lister_organisations,
@@ -61,6 +62,31 @@ class TestListerOrganisations(unittest.TestCase):
             "http://n:3030/catalog/v1/organizations",
             params={"organization_status": "VALIDATED"}, timeout=30,
         )
+
+
+class TestMediaFileDejaComplet(unittest.TestCase):
+    def test_file_size_et_checksum_hash_presents(self):
+        media = {"media_type": "FILE", "file_size": 42191,
+                "checksum": {"algo": "SHA-256", "hash": "abc123"}}
+        self.assertTrue(_media_file_deja_complet(media))
+
+    def test_file_size_absent(self):
+        media = {"media_type": "FILE", "checksum": {"algo": "SHA-256", "hash": "abc123"}}
+        self.assertFalse(_media_file_deja_complet(media))
+
+    def test_checksum_absent(self):
+        media = {"media_type": "FILE", "file_size": 42191}
+        self.assertFalse(_media_file_deja_complet(media))
+
+    def test_checksum_sans_hash(self):
+        media = {"media_type": "FILE", "file_size": 42191, "checksum": {"algo": "SHA-256"}}
+        self.assertFalse(_media_file_deja_complet(media))
+
+    def test_placeholder_mode_copie_non_complet(self):
+        # Le FILE "placeholder" posé par mode.py avant upload (mode copie) n'a ni
+        # file_size ni checksum tant que publier_dataset() ne l'a pas uploadé.
+        media = {"media_type": "FILE", "connector": {"url": "À_RENSEIGNER_APRES_DEPOT_SUR_NOEUD"}}
+        self.assertFalse(_media_file_deja_complet(media))
 
 
 if __name__ == "__main__":

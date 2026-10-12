@@ -185,6 +185,16 @@ def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
     return reponse.json()
 
 
+def _media_file_deja_complet(media: dict) -> bool:
+    """Un média ``FILE`` déjà entièrement formé par l'appelant (``file_size`` +
+    ``checksum.hash`` déjà renseignés) — jamais destiné à être uploadé par
+    ``publier_dataset`` (ex. empreinte calculée une fois sur un fichier distant,
+    jamais stocké sur notre nœud). Distingue ce cas d'un FILE « placeholder » en
+    attente d'upload (mode copie), pour ne pas le faire disparaître silencieusement
+    du nettoyage Local→Rudi qui suit."""
+    return bool(media.get("file_size")) and bool((media.get("checksum") or {}).get("hash"))
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,
@@ -319,10 +329,14 @@ def publier_dataset(
         print(f"  [RUDI] URL storage : {medias[i]['connector']['url']}")
 
     # Nettoyage Local→Rudi : retirer les médias FILE dont le fichier local a disparu
-    # ou dont l'upload a été écarté ci-dessus (trop volumineux pour le nœud)
+    # ou dont l'upload a été écarté ci-dessus (trop volumineux pour le nœud) — sauf un
+    # FILE déjà complet (checksum + file_size déjà renseignés par l'appelant, ex. empreinte
+    # calculée sur un fichier distant jamais stocké chez nous) : il n'a jamais eu vocation
+    # à être uploadé ici, le retirer serait le perdre silencieusement.
     noms_locaux = {os.path.basename(p) for p in fichiers_filtres if os.path.isfile(p)}
     medias[:] = [m for m in medias
                  if m.get("media_type") != "FILE"
+                 or _media_file_deja_complet(m)
                  or (m.get("media_name") in noms_locaux and m.get("media_name") not in noms_ecartes)]
 
     # Corrige les media_ids des entrées non uploadées (SERVICE vers data.gouv.fr,
