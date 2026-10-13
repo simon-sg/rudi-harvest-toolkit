@@ -385,6 +385,8 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     }
     if organization.get("organization_summary"):
         corps["organization_summary"] = organization["organization_summary"]
+    if organization.get("organization_url"):
+        corps["organization_url"] = organization["organization_url"]
     try:
         r = session.post(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request",
                           json=corps, headers=headers, timeout=30)
@@ -447,6 +449,8 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict) -> bool | 
     }
     if organization.get("organization_summary"):
         corps["organization_summary"] = organization["organization_summary"]
+    if organization.get("organization_url"):
+        corps["organization_url"] = organization["organization_url"]
     try:
         r = session.put(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request",
                         json=corps, headers=headers, timeout=30)
@@ -633,7 +637,12 @@ def publier_dataset(
                 print(f"  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « {org_name} » : {e}")
             # Propager l'enrichissement au portail (sinon l'UI Strukture garde l'ancienne
             # description : le PUT nœud ci-dessus ne touche que la copie locale). Best-effort.
-            demander_mise_a_jour_organisation(conf, org_mise_a_jour)
+            # `organization_url` n'existe que côté portail (le modèle nœud RudiOrganization
+            # ne porte pas ce champ) — on l'ajoute au corps de l'appel portail uniquement.
+            org_portail = dict(org_mise_a_jour)
+            if org.get("organization_url"):
+                org_portail["organization_url"] = org["organization_url"]
+            demander_mise_a_jour_organisation(conf, org_portail)
         rudi_metadata["producer"] = org_existante
     elif "organization_id" not in org:
         # L'UUID utilisé doit être celui que le portail assigne (il ignore toute valeur

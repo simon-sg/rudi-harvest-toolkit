@@ -258,6 +258,33 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
         sess.post.assert_called_once()  # seule la tentative de token, rien après
 
+    def test_transmet_organization_url_au_portail(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_create = mock.Mock(status_code=200)
+        rep_create.json.return_value = "uuid-portail"
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = [rep_token, rep_create]
+            demander_creation_organisation(conf, org)
+        corps = sess.post.call_args_list[1][1]["json"]
+        self.assertEqual(corps["organization_url"], "https://www.mydataball.fr")
+
+    def test_url_absente_non_envoyee(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_create = mock.Mock(status_code=200)
+        rep_create.json.return_value = "uuid-portail"
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = [rep_token, rep_create]
+            demander_creation_organisation(conf, self.ORG)
+        corps = sess.post.call_args_list[1][1]["json"]
+        self.assertNotIn("organization_url", corps)
+
     def test_creation_refusee_par_le_portail_retourne_none(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
@@ -304,6 +331,20 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
             sess.post.side_effect = Exception("réseau indisponible")
             self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
         sess.put.assert_not_called()
+
+    def test_transmet_organization_url_au_portail(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_update = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.put.return_value = rep_update
+            demander_mise_a_jour_organisation(conf, org)
+        corps = sess.put.call_args[1]["json"]
+        self.assertEqual(corps["organization_url"], "https://www.mydataball.fr")
 
     def test_mise_a_jour_refusee_par_le_portail_retourne_false(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
