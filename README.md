@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `email_par_defaut()`. |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_noeud()` (renvoi sérialisé vers le portail via la route admin du nœud). |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 
 ## Organisations productrices et validation portail
@@ -88,6 +88,34 @@ tâche BPMN côté Strukture) ; `organization_summary` (description) doit être 
 portail** (adopté à la création) : un id purement local répond `404`. **Best-effort**,
 retourne ``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
 
+### `supprimer_organisation(conf, org_id)` vs `demander_suppression_organisation(conf, organization_id)`
+
+`supprimer_organisation()` ne supprime que la copie **locale** de l'organisation sur le
+**nœud**. `demander_suppression_organisation()` la supprime aussi **côté portail**
+(`DELETE {url_portail}/strukture/v1/organizations/request/{uuid}`, même compte ROBOT que la
+création, rôle `PROVIDER`). Sans cet appel, l'organisation reste présente dans l'UI
+Strukture / le référentiel du portail après sa suppression côté nœud — c'est le pendant
+« portail » de la suppression d'organisation, comme `supprimer_dataset_portail()` l'est
+aux datasets.
+
+Contrairement à la création (tâche BPMN + validation modérateur), la suppression de
+l'organisation elle-même est appliquée **directement** (aucune validation côté Strukture).
+L'`organization_id` doit être celui **assigné par le portail** (adopté à la création) : un
+id purement local répond `404`. Un `401` (token expiré) est rejoué une fois avec un token
+renouvelé. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` = pas de
+`url_portail`, aucune requête).
+
+**Prérequis avant suppression : détacher le producteur.** Toute organisation créée par le
+circuit officiel a automatiquement un `linked_producer` (table liée par une contrainte de
+clé étrangère) ; `demander_suppression_organisation()` échoue avec un `409` tant qu'il
+n'a pas été détaché. Appeler d'abord
+`demander_detachement_producteur(conf, organization_id)` (`DELETE
+{url_portail}/strukture/v1/linked-producers/request/{uuid}`) — **celui-ci a sa propre
+tâche BPMN avec validation modérateur** (contrairement à la suppression de l'organisation) —
+et ne réessayer la suppression qu'une fois cette tâche validée dans l'UI Strukture.
+Vérifié de bout en bout le 2026-10-13 : ce n'est pas un bug RUDI, juste une étape du
+process absente de la documentation jusque-là.
+
 ### `supprimer_dataset(conf, global_id)` vs `supprimer_dataset_portail(conf, global_id)`
 
 `supprimer_dataset()` ne supprime que sur le **nœud**. Si Kalim a déjà moissonné la
@@ -98,6 +126,32 @@ asynchrone** traité par le planificateur Kalim — laisser quelques minutes ava
 conclure à un blocage). Portée depuis `moissonneur-ods` pour être partagée, notamment par
 `moissonneuse-batteuse`. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` =
 pas de `url_portail`, aucune requête).
+
+### Renvoi après validation d'organisation
+
+Une organisation créée via le circuit officiel passe par une tâche BPMN de validation
+modérateur (UI Strukture) ; tant qu'elle n'est pas validée, toute ressource qui la
+référence comme producteur est refusée par Kalim (`ERR-112`). Trois fonctions,
+génériques (aucune dépendance à un projet en particulier), détectent les organisations
+nouvellement validées et isolent les ressources locales concernées :
+
+- `organisations_nouvellement_validees(conf, chemin_etat)` — compare les organisations à
+  `organization_status: VALIDATED` côté nœud à un état persisté sur disque (JSON,
+  `{"organisations_traitees": [...]}`), pour ne retraiter que celles **nouvellement**
+  validées depuis le dernier appel.
+- `marquer_organisations_traitees(chemin_etat, organisation_ids)` — à appeler **après**
+  la tentative de renvoi (jamais avant), pour ne pas perdre la trace d'une organisation
+  validée si le renvoi échoue en cours de route.
+- `ressources_pour_organisations(metadonnees, organisation_ids)` — filtre une liste de
+  métadonnées (ex. `toutes_metadonnees_rudi()`) sur `producer.organization_id`.
+
+Portée depuis `moissonneur-ods` (2026-10-11) pour être partagée le 2026-10-13, à la
+demande de son usage par `moissonneuse-batteuse`. **Le renvoi lui-même n'est volontairement
+pas unifié** : chaque projet pousse différemment (`moissonneur-ods` pousse directement vers
+Kalim, `moissonneuse-batteuse` passe par la route admin du nœud via
+`renvoyer_ressources_noeud(conf, global_ids)` — un `global_id` à la fois, pause de 2s entre
+chaque, jamais en lot : cette route n'a aucune limite de concurrence interne et un lot
+surcharge le service de consultation du portail).
 
 ## Découplage
 

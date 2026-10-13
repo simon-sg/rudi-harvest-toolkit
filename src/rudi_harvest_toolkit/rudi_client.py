@@ -185,6 +185,89 @@ def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
     return reponse.json()
 
 
+def organisations_nouvellement_validees(conf: dict, chemin_etat: str) -> list[str]:
+    """Organisations dont le rapport portail (``organization_status=VALIDATED``, reçu
+    par le nœud quand un humain valide dans l'UI Strukture) n'a pas encore été vu lors
+    d'un précédent appel — état persisté dans ``chemin_etat`` (JSON,
+    ``{"organisations_traitees": [...]}``) pour ne pas retraiter indéfiniment les mêmes
+    organisations à chaque exécution automatique (cron, script de reprise après
+    validation manuelle en UI...).
+
+    Ne modifie ``chemin_etat`` qu'après l'appel — c'est à l'appelant d'y écrire une
+    fois le renvoi effectivement tenté (``marquer_organisations_traitees``), pour ne
+    jamais perdre la trace d'une organisation validée si le renvoi échoue avant
+    d'avoir pu être tenté.
+
+    Portée de ``rudi_harvest_toolkit.portail_client`` (moissonneur-ods) — même
+    algorithme, généralisé ici pour être réutilisable sans dépendre de ce projet.
+    """
+    validees = {o["organization_id"] for o in lister_organisations(conf, statut="VALIDATED")
+               if o.get("organization_id")}
+    deja_traitees = _organisations_traitees(chemin_etat)
+    return sorted(validees - deja_traitees)
+
+
+def marquer_organisations_traitees(chemin_etat: str, organisation_ids: list[str]) -> None:
+    """Enregistre ``organisation_ids`` comme traitées dans ``chemin_etat`` (fusion
+    avec l'état existant, jamais un remplacement)."""
+    deja_traitees = _organisations_traitees(chemin_etat)
+    toutes = sorted(deja_traitees | set(organisation_ids))
+    with open(chemin_etat, "w", encoding="utf-8") as f:
+        json.dump({"organisations_traitees": toutes}, f, indent=2)
+
+
+def _organisations_traitees(chemin_etat: str) -> set[str]:
+    if not os.path.isfile(chemin_etat):
+        return set()
+    try:
+        with open(chemin_etat, encoding="utf-8") as f:
+            return set(json.load(f).get("organisations_traitees", []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def ressources_pour_organisations(metadonnees: list[dict], organisation_ids: list[str]) -> list[dict]:
+    """Sous-ensemble de ``metadonnees`` dont ``producer.organization_id`` est dans
+    ``organisation_ids`` — les ressources à (re)pousser pour ces organisations."""
+    ids = set(organisation_ids)
+    return [m for m in metadonnees if (m.get("producer") or {}).get("organization_id") in ids]
+
+
+def renvoyer_ressources_noeud(conf: dict, global_ids: list[str], pause_s: float = 2.0) -> dict:
+    """Demande au **nœud** de renvoyer des ressources déjà publiées vers le portail
+    (``POST {url_catalog}/admin/portal/resources/send``, un ``global_id`` à la fois).
+
+    **Toujours un seul ``global_id`` par appel, jamais un lot** : cette route n'a
+    aucune limite de concurrence interne (``listIds.forEach(id => sendMetadataToPortal
+    (id)...)`` côté ``rudi-catalog``) — un lot de N déclenche N appels de
+    pré-vérification simultanés vers le service de consultation du portail (konsult),
+    suffisant pour le surcharger et provoquer une cascade de refus (vécu : 112 ids en
+    paquets de 20 → 147 refus en quelques minutes). Une pause de ``pause_s`` secondes
+    entre chaque id est la procédure sûre déjà établie pour cette route.
+
+    Pas d'authentification nécessaire en dev (``should_control_private_requests =
+    false`` côté nœud) — à vérifier si utilisé contre un nœud non-dev.
+
+    Retourne ``{"ok": n, "echecs": [(global_id, erreur), ...]}``. Best-effort par id :
+    une erreur sur un id n'interrompt pas le traitement des suivants.
+    """
+    url = f"{url_catalog(conf)}/admin/portal/resources/send"
+    ok = 0
+    echecs: list[tuple[str, str]] = []
+    for i, global_id in enumerate(global_ids):
+        try:
+            r = session.post(url, json=[global_id], timeout=30)
+            if r.status_code >= 400:
+                echecs.append((global_id, f"{r.status_code} {r.text[:200]}"))
+            else:
+                ok += 1
+        except Exception as e:
+            echecs.append((global_id, str(e)))
+        if i < len(global_ids) - 1:
+            time.sleep(pause_s)
+    return {"ok": ok, "echecs": echecs}
+
+
 def _media_file_deja_complet(media: dict) -> bool:
     """Un média ``FILE`` déjà entièrement formé par l'appelant (``file_size`` +
     ``checksum.hash`` déjà renseignés) — jamais destiné à être uploadé par
@@ -348,6 +431,134 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict) -> bool | 
         return True
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : échec de la mise à jour portail de l'organisation : {e}")
+        return False
+
+
+def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | None:
+    """Demande le détachement du producteur (``linked_producer``) d'une organisation
+    **auprès du portail** (``DELETE {url_portail}/strukture/v1/linked-producers/request/{uuid}``,
+    rôle PROVIDER requis — même compte ROBOT que ``demander_creation_organisation()``).
+
+    **Prérequis obligatoire avant ``demander_suppression_organisation()``** pour toute
+    organisation créée par le circuit officiel : elle a automatiquement un
+    ``linked_producer`` (table ``strukture_data.linked_producer``, contrainte de clé
+    étrangère vers l'organisation), jamais supprimé par
+    ``OrganizationServiceImpl.deleteOrganization`` — qui échoue donc avec un ``409`` tant
+    que le détachement n'a pas été fait. Pas un bug RUDI, juste un enchaînement à deux
+    étapes (confirmé en lisant ``LinkedProducerController``/``LinkedProducerWorkflowContext``
+    et le process BPMN ``linked-producer-process.bpmn20.xml``).
+
+    Contrairement à la suppression d'organisation elle-même, le détachement passe par sa
+    **propre tâche BPMN** (``UserTask_2``, groupe MODERATOR) : cet appel ne fait que
+    déposer la demande, il faut ensuite qu'un modérateur la valide dans l'UI Strukture
+    avant que ``demander_suppression_organisation()`` puisse réussir. Une fois validé, le
+    nœud reçoit aussi un rapport (``method: DETACH``) qui met à jour
+    ``linked_producer_status`` localement.
+
+    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
+    ``False`` en cas d'échec (auth portail, refus, réseau ; journalisé), ``True`` si le
+    portail a accepté la demande de détachement (tâche créée, validation modérateur
+    encore nécessaire).
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de détachement producteur envoyé ({e})")
+        return False
+
+    def _detach(jeton: str):
+        return session.delete(f"{url_portail.rstrip('/')}/strukture/v1/linked-producers/request/{organization_id}",
+                              headers={"Authorization": f"Bearer {jeton}"}, timeout=30)
+
+    try:
+        r = _detach(token)
+        if r.status_code == 401:
+            token = _token_portail(url_portail, usr_portail, pwd_portail)
+            r = _detach(token)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : détachement producteur de l'organisation {organization_id[:12]}… refusé "
+                  f"par le portail ({r.status_code}) : {r.text[:200]}")
+            return False
+        print(f"  [RUDI] demande de détachement producteur envoyée pour l'organisation {organization_id[:12]}… "
+              f"— validation modérateur nécessaire avant suppression.")
+        return True
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la demande de détachement producteur : {e}")
+        return False
+
+
+def demander_suppression_organisation(conf: dict, organization_id: str) -> bool | None:
+    """Demande la suppression d'une organisation productrice **auprès du portail**
+    (``DELETE {url_portail}/strukture/v1/organizations/request/{uuid}``, rôle PROVIDER
+    requis — même compte ROBOT que ``demander_creation_organisation()``).
+
+    Complète ``supprimer_organisation()``, qui ne supprime que la copie **locale** sur le
+    nœud : sans cet appel, l'organisation reste présente dans l'UI Strukture / le
+    référentiel du portail après sa suppression côté nœud. C'est le pendant « portail »
+    de la suppression d'organisation (équivalent pour les organisations de ce que
+    ``supprimer_dataset_portail()`` est aux datasets).
+
+    **Prérequis : détacher le producteur d'abord si l'organisation en a un.** La
+    suppression est appliquée directement côté service (``OrganizationServiceImpl.
+    deleteOrganization``, pas de tâche BPMN pour la suppression elle-même — comme la
+    mise à jour, contrairement à la création), MAIS la table ``linked_producer`` a une
+    contrainte de clé étrangère vers l'organisation. Toute organisation créée par le
+    circuit officiel (``demander_creation_organisation()``) se voit automatiquement
+    attribuer un ``linked_producer`` (c'est documenté : on ne l'appelle jamais soi-même à
+    la création) — la suppression échoue donc avec un ``409`` tant que ce rattachement
+    n'a pas été explicitement détaché via ``demander_detachement_producteur()`` **et**
+    validé par un modérateur dans l'UI Strukture (tâche BPMN à part,
+    ``linked-producer-process.bpmn20.xml`` / ``UserTask_2``). Vérifié de bout en bout le
+    2026-10-13 : confirmé qu'il ne s'agit pas d'un bug RUDI — juste d'une étape du
+    process absente de cette docstring jusqu'ici.
+
+    L'``organization_id`` transmis doit être celui que le portail a assigné (adopté à la
+    création via ``demander_creation_organisation()``) ; un id purement local
+    (organisation créée seulement sur le nœud) répond ``404``.
+
+    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
+    ``False`` en cas d'échec (auth portail, refus 409/404, réseau ; journalisé), ``True``
+    si le portail a accepté la suppression. Un ``401`` (token expiré) est rejoué une fois
+    avec un token renouvelé.
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression d'organisation envoyée ({e})")
+        return False
+
+    def _delete(jeton: str):
+        return session.delete(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request/{organization_id}",
+                              headers={"Authorization": f"Bearer {jeton}"}, timeout=30)
+
+    try:
+        r = _delete(token)
+        if r.status_code == 401:
+            token = _token_portail(url_portail, usr_portail, pwd_portail)
+            r = _delete(token)
+        if r.status_code >= 400:
+            indice_409 = (" — producteur probablement encore rattaché : appeler "
+                          "demander_detachement_producteur() d'abord, le faire valider par un "
+                          "modérateur, puis réessayer") if r.status_code == 409 else ""
+            print(f"  [RUDI] AVERTISSEMENT : suppression d'organisation {organization_id[:12]}… refusée "
+                  f"par le portail ({r.status_code}){indice_409} : {r.text[:200]}")
+            return False
+        print(f"  [RUDI] suppression portail demandée pour l'organisation {organization_id[:12]}…")
+        return True
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la suppression portail de l'organisation : {e}")
         return False
 
 

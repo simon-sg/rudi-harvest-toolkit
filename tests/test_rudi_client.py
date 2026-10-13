@@ -9,9 +9,15 @@ from rudi_harvest_toolkit.rudi_client import (
     _media_file_deja_complet,
     charger_conf_rudi,
     demander_creation_organisation,
+    demander_detachement_producteur,
     demander_mise_a_jour_organisation,
+    demander_suppression_organisation,
     email_par_defaut,
     lister_organisations,
+    marquer_organisations_traitees,
+    organisations_nouvellement_validees,
+    renvoyer_ressources_noeud,
+    ressources_pour_organisations,
     supprimer_dataset_portail,
 )
 
@@ -65,6 +71,100 @@ class TestListerOrganisations(unittest.TestCase):
             "http://n:3030/catalog/v1/organizations",
             params={"organization_status": "VALIDATED"}, timeout=30,
         )
+
+
+class TestOrganisationsNouvellementValidees(unittest.TestCase):
+    def test_exclut_les_organisations_deja_traitees(self):
+        with tempfile.TemporaryDirectory() as d:
+            chemin_etat = os.path.join(d, "etat_organisations_validees.json")
+            with open(chemin_etat, "w", encoding="utf-8") as f:
+                json.dump({"organisations_traitees": ["org-1"]}, f)
+            with mock.patch("rudi_harvest_toolkit.rudi_client.lister_organisations",
+                             return_value=[{"organization_id": "org-1"},
+                                          {"organization_id": "org-2"}]):
+                self.assertEqual(
+                    organisations_nouvellement_validees({"url": "http://n:3032"}, chemin_etat),
+                    ["org-2"],
+                )
+
+    def test_aucun_etat_prealable_retourne_toutes_les_validees(self):
+        with tempfile.TemporaryDirectory() as d:
+            chemin_etat = os.path.join(d, "etat_organisations_validees.json")
+            with mock.patch("rudi_harvest_toolkit.rudi_client.lister_organisations",
+                             return_value=[{"organization_id": "org-9"}]):
+                self.assertEqual(
+                    organisations_nouvellement_validees({"url": "http://n:3032"}, chemin_etat),
+                    ["org-9"],
+                )
+
+    def test_ne_modifie_pas_le_fichier_etat(self):
+        with tempfile.TemporaryDirectory() as d:
+            chemin_etat = os.path.join(d, "etat_organisations_validees.json")
+            with mock.patch("rudi_harvest_toolkit.rudi_client.lister_organisations",
+                             return_value=[{"organization_id": "org-1"}]):
+                organisations_nouvellement_validees({"url": "http://n:3032"}, chemin_etat)
+            self.assertFalse(os.path.isfile(chemin_etat))
+
+
+class TestMarquerOrganisationsTraitees(unittest.TestCase):
+    def test_fusionne_avec_etat_existant(self):
+        with tempfile.TemporaryDirectory() as d:
+            chemin_etat = os.path.join(d, "etat.json")
+            marquer_organisations_traitees(chemin_etat, ["org-1"])
+            marquer_organisations_traitees(chemin_etat, ["org-2"])
+            with open(chemin_etat, encoding="utf-8") as f:
+                self.assertEqual(sorted(json.load(f)["organisations_traitees"]),
+                                 ["org-1", "org-2"])
+
+
+class TestRessourcesPourOrganisations(unittest.TestCase):
+    def test_filtre_sur_producer_organization_id(self):
+        metas = [
+            {"global_id": "g1", "producer": {"organization_id": "org-1"}},
+            {"global_id": "g2", "producer": {"organization_id": "org-2"}},
+            {"global_id": "g3"},  # pas de producer : jamais sélectionnée
+        ]
+        self.assertEqual(
+            [m["global_id"] for m in ressources_pour_organisations(metas, ["org-1"])],
+            ["g1"],
+        )
+
+
+class TestRenvoyerRessourcesNoeud(unittest.TestCase):
+    def test_un_appel_par_global_id_avec_pause_entre_chaque(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
+        reponse = mock.Mock(status_code=200, text="")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep") as dodo:
+            sess.post.return_value = reponse
+            bilan = renvoyer_ressources_noeud(conf, ["g1", "g2", "g3"], pause_s=2.0)
+        self.assertEqual(bilan, {"ok": 3, "echecs": []})
+        self.assertEqual(sess.post.call_count, 3)
+        for appel, gid in zip(sess.post.call_args_list, ["g1", "g2", "g3"]):
+            self.assertEqual(appel.args[0], "http://n:3030/catalog/admin/portal/resources/send")
+            self.assertEqual(appel.kwargs["json"], [gid])
+        # pause entre chaque, pas après le dernier
+        self.assertEqual(dodo.call_count, 2)
+
+    def test_echec_sur_un_id_n_interrompt_pas_les_suivants(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
+        rep_ok = mock.Mock(status_code=200, text="")
+        rep_ko = mock.Mock(status_code=500, text="Internal Server Error")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
+            sess.post.side_effect = [rep_ok, rep_ko]
+            bilan = renvoyer_ressources_noeud(conf, ["g1", "g2"])
+        self.assertEqual(bilan["ok"], 1)
+        self.assertEqual(len(bilan["echecs"]), 1)
+        self.assertEqual(bilan["echecs"][0][0], "g2")
+
+    def test_exception_reseau_comptee_comme_echec(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
+            sess.post.side_effect = Exception("réseau indisponible")
+            bilan = renvoyer_ressources_noeud(conf, ["g1"])
+        self.assertEqual(bilan, {"ok": 0, "echecs": [("g1", "réseau indisponible")]})
 
 
 class TestMediaFileDejaComplet(unittest.TestCase):
@@ -186,6 +286,118 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
             sess.post.return_value = rep_token
             sess.put.return_value = rep_update
             self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+
+
+class TestDemanderDetachementProducteur(unittest.TestCase):
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(demander_detachement_producteur(conf, "uuid-portail"))
+        sess.delete.assert_not_called()
+        sess.post.assert_not_called()
+
+    def test_succes_emet_un_delete_vers_linked_producers_request_uuid(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertTrue(demander_detachement_producteur(conf, "uuid-portail"))
+        args, kwargs = sess.delete.call_args
+        self.assertEqual(args[0], "http://portail.test/strukture/v1/linked-producers/request/uuid-portail")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+
+    def test_auth_portail_echoue_false_sans_delete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertFalse(demander_detachement_producteur(conf, "uuid-portail"))
+        sess.delete.assert_not_called()
+
+    def test_401_renouvelle_le_token_et_rejoue(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_401 = mock.Mock(status_code=401, text="Unauthorized")
+        rep_ok = mock.Mock(status_code=200)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.side_effect = [rep_401, rep_ok]
+            self.assertTrue(demander_detachement_producteur(conf, "uuid-portail"))
+        self.assertEqual(sess.post.call_count, 2)  # token initial + renouvellement
+        self.assertEqual(sess.delete.call_count, 2)
+
+    def test_echec_404_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=404, text="Not Found")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertFalse(demander_detachement_producteur(conf, "uuid-portail"))
+
+
+class TestDemanderSuppressionOrganisation(unittest.TestCase):
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(demander_suppression_organisation(conf, "uuid-portail"))
+        sess.delete.assert_not_called()
+        sess.post.assert_not_called()
+
+    def test_succes_emet_un_delete_vers_organizations_request_uuid(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=204)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertTrue(demander_suppression_organisation(conf, "uuid-portail"))
+        args, kwargs = sess.delete.call_args
+        self.assertEqual(args[0], "http://portail.test/strukture/v1/organizations/request/uuid-portail")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+
+    def test_auth_portail_echoue_false_sans_delete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertFalse(demander_suppression_organisation(conf, "uuid-portail"))
+        sess.delete.assert_not_called()
+
+    def test_401_renouvelle_le_token_et_rejoue(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_401 = mock.Mock(status_code=401, text="Unauthorized")
+        rep_ok = mock.Mock(status_code=204)
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.side_effect = [rep_401, rep_ok]
+            self.assertTrue(demander_suppression_organisation(conf, "uuid-portail"))
+        self.assertEqual(sess.post.call_count, 2)  # token initial + renouvellement
+        self.assertEqual(sess.delete.call_count, 2)
+
+    def test_echec_404_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        rep_del = mock.Mock(status_code=404, text="Not Found")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = rep_token
+            sess.delete.return_value = rep_del
+            self.assertFalse(demander_suppression_organisation(conf, "uuid-portail"))
 
 
 class TestSupprimerDatasetPortail(unittest.TestCase):
