@@ -19,6 +19,7 @@ from rudi_harvest_toolkit.rudi_client import (
     renvoyer_ressources_connues,
     ressources_pour_organisations,
     supprimer_dataset_portail,
+    televerser_piece_jointe,
 )
 
 
@@ -301,30 +302,127 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
     ORG = {"organization_id": "uuid-portail", "organization_name": "MyDataBall",
            "organization_summary": "Producteur de données ouvertes."}
 
+    def _session(self, sess, get_reponse=None, get_json=None, create_statut=200, create_corps=None,
+                 start_statut=200):
+        """Câble une session feinte pour le flux DRAFT_UPDATE : token (POST), GET de
+        l'organisation, POST du brouillon, PUT du démarrage."""
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        sess.post.side_effect = [rep_token, mock.Mock(status_code=create_statut,
+                                                      text="erreur",
+                                                      json=mock.Mock(return_value=create_corps if create_corps is not None else {}))]
+        rep_get = get_reponse if get_reponse is not None else mock.Mock(status_code=200)
+        if get_json is not None:
+            rep_get.json.return_value = get_json
+        sess.get.return_value = rep_get
+        sess.put.return_value = mock.Mock(status_code=start_statut, text="erreur")
+        return sess
+
     def test_sans_url_portail_no_op_sans_requete(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self.assertIsNone(demander_mise_a_jour_organisation(conf, self.ORG))
         sess.put.assert_not_called()
         sess.post.assert_not_called()
+        sess.get.assert_not_called()
 
-    def test_succes_emet_un_put_vers_organizations_request(self):
+    def test_name_ou_id_manquant_false_sans_requete(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_update = mock.Mock(status_code=200)
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.put.return_value = rep_update
-            self.assertTrue(demander_mise_a_jour_organisation(conf, self.ORG))
-        sess.post.assert_called_once()  # token uniquement
-        args, kwargs = sess.put.call_args
-        self.assertEqual(args[0], "http://portail.test/strukture/v1/organizations/request")
-        self.assertEqual(kwargs["json"], self.ORG)  # id portail conservé (jamais réassigné)
-        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+            self.assertFalse(demander_mise_a_jour_organisation(
+                conf, {"organization_id": None, "organization_name": "X"}))
+        sess.post.assert_not_called()
 
-    def test_auth_portail_echoue_false_sans_put(self):
+    def test_succes_suit_le_flux_draft_update(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {"uuid": "uuid-portail"}})
+            self.assertTrue(demander_mise_a_jour_organisation(conf, self.ORG))
+        # GET de l'organisation puis POST du brouillon puis PUT du démarrage
+        self.assertEqual(sess.get.call_args[0][0],
+                         "http://portail.test/strukture/v1/organizations/request/uuid-portail")
+        self.assertEqual(sess.post.call_count, 2)  # token + brouillon
+        args_brouillon, kwargs_brouillon = sess.post.call_args_list[1]
+        self.assertEqual(args_brouillon[0], "http://portail.test/strukture/v1/organizations/tasks")
+        corps = kwargs_brouillon["json"]
+        self.assertEqual(corps["uuid"], "uuid-portail")
+        self.assertEqual(corps["name"], "MyDataBall")
+        self.assertEqual(corps["form"]["type"], "DRAFT_UPDATE")
+        args_start, kwargs_start = sess.put.call_args
+        self.assertEqual(args_start[0], "http://portail.test/strukture/v1/organizations/tasks/start")
+        # le form est réinjecté dans l'asset de la tâche avant démarrage
+        self.assertEqual(kwargs_start["json"]["asset"]["form"]["type"], "DRAFT_UPDATE")
+        self.assertEqual(kwargs_start["headers"]["Authorization"], "Bearer tok123")
+
+    def test_champs_du_formulaire_au_format_values_liste(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, self.ORG)
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        sections = {s["name"]: s["fields"] for s in form["sections"]}
+        champs = {f["definition"]["name"]: f["values"] for f in
+                  sections["organization-process-draft/update-organization"]}
+        self.assertEqual(champs["name"], ["MyDataBall"])
+        self.assertEqual(champs["description"], ["Producteur de données ouvertes."])
+        # le format attendu par le portail est « values » (liste), jamais « value »
+        champ_nom = next(f for f in sections["organization-process-draft/update-organization"]
+                         if f["definition"]["name"] == "name")
+        self.assertIn("values", champ_nom)
+        self.assertNotIn("value", champ_nom)
+        message = sections["organization-process-draft/update-message-to-moderator"]
+        self.assertEqual(message[0]["definition"]["name"], "updateMessageToModerator")
+        self.assertTrue(message[0]["values"][0])
+
+    def test_description_tronquee_a_1024(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_summary": "x" * 2000}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, org)
+        corps = sess.post.call_args_list[1][1]["json"]
+        self.assertEqual(len(corps["description"]), 1024)
+
+    def test_url_valide_transmise_dans_le_formulaire(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_url": "https://www.mydataball.fr/"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, org)
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        section = next(s for s in form["sections"]
+                       if s["name"] == "organization-process-draft/update-organization")
+        champs = {f["definition"]["name"]: f["values"][0] for f in section["fields"]}
+        self.assertEqual(champs["url"], "https://www.mydataball.fr/")
+
+    def test_url_non_conforme_ignoree(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_url": "pas une url"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, org)
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        section = next(s for s in form["sections"]
+                       if s["name"] == "organization-process-draft/update-organization")
+        noms = [f["definition"]["name"] for f in section["fields"]]
+        self.assertNotIn("url", noms)
+
+    def test_organization_inconnue_du_portail_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_reponse=mock.Mock(status_code=404))
+            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+        # seule la requête de token a été faite côté POST, pas de brouillon
+        sess.put.assert_not_called()
+
+    def test_auth_portail_echoue_false_sans_requete(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -332,30 +430,154 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
             self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
         sess.put.assert_not_called()
 
-    def test_transmet_organization_url_au_portail(self):
+    def test_creation_brouillon_refusee_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_statut=400)
+            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+        sess.put.assert_not_called()
+
+    def test_demarrage_refuse_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}}, start_statut=400)
+            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+
+    def test_deja_a_jour_aucune_demande_deposee(self):
+        """Le nœud n'expose pas organization_url : sans ce garde-fou, chaque passage
+        redéposerait une demande de modification identique."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_update = mock.Mock(status_code=200)
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.put.return_value = rep_update
-            demander_mise_a_jour_organisation(conf, org)
-        corps = sess.put.call_args[1]["json"]
-        self.assertEqual(corps["organization_url"], "https://www.mydataball.fr")
+            self._session(sess, get_json={"organization_summary": "Producteur de données ouvertes.",
+                                          "organization_url": "https://www.mydataball.fr"})
+            self.assertTrue(demander_mise_a_jour_organisation(conf, org))
+        sess.post.assert_called_once()  # token uniquement, pas de brouillon
+        sess.put.assert_not_called()
 
-    def test_mise_a_jour_refusee_par_le_portail_retourne_false(self):
+    def test_description_differente_depose_une_demande(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_update = mock.Mock(status_code=400, text="description too long")
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.put.return_value = rep_update
-            self.assertFalse(demander_mise_a_jour_organisation(conf, self.ORG))
+            self._session(sess, get_json={"organization_summary": "Ancienne description.",
+                                          "organization_url": None},
+                          create_corps={"asset": {}})
+            self.assertTrue(demander_mise_a_jour_organisation(conf, self.ORG))
+        self.assertEqual(sess.post.call_count, 2)  # token + brouillon
+        sess.put.assert_called_once()
+
+    def test_image_transmise_comme_champ_organizationImage(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, self.ORG, image_id="img-uuid-1")
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        section = next(s for s in form["sections"]
+                       if s["name"] == "organization-process-draft/update-organization")
+        champ_img = next(f for f in section["fields"]
+                         if f["definition"]["name"] == "organizationImage")
+        self.assertEqual(champ_img["values"], ["img-uuid-1"])
+        self.assertEqual(champ_img["definition"]["type"], "ATTACHMENT")
+
+    def test_image_absente_aucun_champ_image(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_mise_a_jour_organisation(conf, self.ORG)
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        section = next(s for s in form["sections"]
+                       if s["name"] == "organization-process-draft/update-organization")
+        noms = [f["definition"]["name"] for f in section["fields"]]
+        self.assertNotIn("organizationImage", noms)
+
+    def test_image_force_le_depot_meme_si_deja_a_jour(self):
+        """Le portail n'expose pas « a déjà un logo » : fournir une image doit forcer
+        le dépôt malgré une description/url déjà à jour."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_json={"organization_summary": self.ORG["organization_summary"],
+                                          "organization_url": "https://www.mydataball.fr"},
+                          create_corps={"asset": {}})
+            self.assertTrue(demander_mise_a_jour_organisation(conf, org, image_id="img-9"))
+        self.assertEqual(sess.post.call_count, 2)  # token + brouillon
+        sess.put.assert_called_once()
+
+
+class TestTeleverserPieceJointe(unittest.TestCase):
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
+        sess.post.assert_not_called()
+
+    def test_succes_retourne_l_uuid(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            rep_token = mock.Mock(status_code=200)
+            rep_token.json.return_value = {"access_token": "tok123"}
+            rep_upload = mock.Mock(status_code=201)
+            rep_upload.json.return_value = "uuid-image-1"
+            sess.post.side_effect = [rep_token, rep_upload]
+            self.assertEqual(
+                televerser_piece_jointe(conf, b"\x89PNG...", "logo.png", "image/png"),
+                "uuid-image-1")
+        args, kwargs = sess.post.call_args_list[1]
+        self.assertEqual(args[0], "http://portail.test/strukture/v1/attachments")
+        self.assertEqual(kwargs["files"]["file"][0], "logo.png")
+        self.assertEqual(kwargs["files"]["file"][2], "image/png")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+
+    def test_uuid_en_corps_texte_brut(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            rep_token = mock.Mock(status_code=200)
+            rep_token.json.return_value = {"access_token": "tok123"}
+            rep_upload = mock.Mock(status_code=201, text='"uuid-texte"')
+            rep_upload.json.side_effect = ValueError("pas du json")
+            sess.post.side_effect = [rep_token, rep_upload]
+            self.assertEqual(televerser_piece_jointe(conf, b"x", "l.png", "image/png"),
+                             "uuid-texte")
+
+    def test_type_non_supporte_ignore_sans_upload(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.svg", "image/svg+xml"))
+        sess.post.assert_not_called()
+
+    def test_taille_excessive_ignoree_sans_upload(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(televerser_piece_jointe(conf, b"x" * (10 * 1024 * 1024 + 1),
+                                                      "logo.png", "image/png"))
+        sess.post.assert_not_called()
+
+    def test_echec_upload_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            rep_token = mock.Mock(status_code=200)
+            rep_token.json.return_value = {"access_token": "tok123"}
+            rep_upload = mock.Mock(status_code=400, text="refusé")
+            sess.post.side_effect = [rep_token, rep_upload]
+            self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
+
+    def test_auth_portail_echoue_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
 
 
 class TestDemanderDetachementProducteur(unittest.TestCase):

@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin). |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `televerser_piece_jointe()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin). |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 
 ## Organisations productrices et validation portail
@@ -72,21 +72,41 @@ source natif (`host:4030`) depuis l'intérieur de leurs conteneurs. Sans
 l'appel échoue **silencieusement** (simple log côté Java, jamais une erreur visible) — voir
 la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
 
-### `demander_mise_a_jour_organisation(conf, organization)`
+### `demander_mise_a_jour_organisation(conf, organization, image_id=None)`
 
 Met à jour une organisation **déjà connue du portail** (enrichissement
-`organization_summary`/caption d'un producteur préexistant) via
-`PUT {url_portail}/strukture/v1/organizations/request` (même compte ROBOT que la création,
-seul le verbe change). Appelé automatiquement par `publier_dataset()` après un
-enrichissement d'organisation, en complément du `PUT /organizations` sur le nœud — sans
-cet appel, l'UI Strukture conserve l'ancienne description (le `PUT` nœud ne touche que la
-copie locale).
+`organization_summary`/caption/`organization_url`/logo d'un producteur préexistant) en
+passant par le **workflow BPMN officiel** `DRAFT_UPDATE` — le chemin direct
+(`PUT /organizations/request`) est bogué côté Strukture (remet à `null` des champs d'audit)
+et inutilisable. Appelé automatiquement par `enrichir_organisations.py`, en complément du
+`PUT /organizations` sur le nœud — sans cet appel, l'UI Strukture conserve l'ancienne
+description (le `PUT` nœud ne touche que la copie locale).
 
-Contrairement à la création, la mise à jour portail est appliquée **directement** (aucune
-tâche BPMN côté Strukture) ; `organization_summary` (description) doit être non vide et
-≤ 800 caractères sinon ``400``. L'`organization_id` doit être celui **assigné par le
-portail** (adopté à la création) : un id purement local répond `404`. **Best-effort**,
-retourne ``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
+Enchaînement : `POST /organizations/tasks` (brouillon, `name`/`description` **requis** au
+niveau supérieur), réinjection du `form` dans `asset.form`, puis `PUT /organizations/tasks/start`.
+Le robot (rôle `PROVIDER`) ne peut pas auto-valider la tâche : **un modérateur doit valider la
+demande dans l'UI Strukture** pour que la modification soit appliquée
+(`publishOrganizationModification`). `description` est tronquée à **1024** caractères (validateur
+`MAXLENGTH`) ; `url` doit satisfaire le REGEXP `^(https?|ftp)://[a-zA-Z0-9.-]+(/\S*)?$` sinon elle
+est retirée. **Idempotent** : si le portail porte déjà la description voulue (et la même url) et
+qu'aucune image n'est fournie, aucune demande n'est déposée. L'`organization_id` doit être celui
+**assigné par le portail** (adopté à la création). **Best-effort**, retourne
+``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
+
+`image_id` (optionnel) : UUID d'une pièce jointe obtenu via `televerser_piece_jointe()`,
+transmis comme champ `organizationImage` du formulaire (logo du producteur, appliqué à la
+validation). Fournir une image **force** le dépôt même si description/url sont déjà à jour
+(le portail n'expose pas « a déjà un logo personnalisé » : la route média renvoie toujours
+*un* logo, par défaut le cas échéant) — à l'appelant de ne pas re-soumettre indéfiniment.
+
+### `televerser_piece_jointe(conf, contenu, nom_fichier, type_mime=None)`
+
+Téléverse une pièce jointe (image d'organisation) sur le portail :
+`POST {url_portail}/strukture/v1/attachments` (multipart, champ `file`, même compte ROBOT
+que les autres demandes). Retourne l'UUID d'attachement (``str``), à passer comme `image_id`
+de `demander_mise_a_jour_organisation()`. Le portail n'accepte que **jpeg/png, ≤ 10 Mo**
+(vérifié localement avant l'envoi). **Best-effort** : retourne ``None`` sans lever (pas de
+`url_portail`, type/taille invalide, auth échouée, refus, réseau).
 
 ### `supprimer_organisation(conf, org_id)` vs `demander_suppression_organisation(conf, organization_id)`
 
