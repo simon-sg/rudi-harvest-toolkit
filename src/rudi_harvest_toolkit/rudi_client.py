@@ -233,37 +233,64 @@ def ressources_pour_organisations(metadonnees: list[dict], organisation_ids: lis
     return [m for m in metadonnees if (m.get("producer") or {}).get("organization_id") in ids]
 
 
-def renvoyer_ressources_noeud(conf: dict, global_ids: list[str], pause_s: float = 2.0) -> dict:
-    """Demande au **nœud** de renvoyer des ressources déjà publiées vers le portail
-    (``POST {url_catalog}/admin/portal/resources/send``, un ``global_id`` à la fois).
+def renvoyer_ressources_connues(conf: dict, metadonnees: list[dict], pause_s: float = 2.0) -> dict:
+    """Renvoie vers le portail des ressources déjà publiées sur CE nœud, en les RE-PUTant
+    telles quelles sur la route producteur normale (``PUT /catalog/v1/resources`` via
+    ``writer.connector.put_catalog("resources", ...)`` — la même que ``publier_dataset()``/
+    ``_put_metadata()``), **jamais** la route admin (``POST /admin/portal/resources/send``) :
+    celle-ci exige un profil (``dev_send_many_metadata_to_portal``) qu'aucun profil
+    producteur normal (``rudi_prod_manager``, ``rudi_api_client``) n'a dans
+    ``0-ini/profiles_source.ini`` côté nœud — seule la clé Postman/« all » l'a. Un
+    harvester/moissonneur ne doit jamais se comporter comme un admin, même quand une route
+    admin « marche » en dev faute d'authentification appliquée.
 
-    **Toujours un seul ``global_id`` par appel, jamais un lot** : cette route n'a
-    aucune limite de concurrence interne (``listIds.forEach(id => sendMetadataToPortal
-    (id)...)`` côté ``rudi-catalog``) — un lot de N déclenche N appels de
-    pré-vérification simultanés vers le service de consultation du portail (konsult),
-    suffisant pour le surcharger et provoquer une cascade de refus (vécu : 112 ids en
-    paquets de 20 → 147 refus en quelques minutes). Une pause de ``pause_s`` secondes
-    entre chaque id est la procédure sûre déjà établie pour cette route.
+    ``overwriteMetadata()`` (``metadataController.js:690-703``, côté nœud) appelle déjà
+    ``sendToPortal(finalMetadata)`` dès que ``areAllMediaAvailable`` est vrai — un pur
+    contrôle de disponibilité des médias (``isEveryMediaAvailable``/``Metadata.js:186-195``),
+    indépendant de l'état de validation de l'organisation productrice (pas bloqué par un
+    ``ERR-112`` antérieur). ``sendToPortal()`` appelle ensuite ``sendMetadataToPortal()``
+    (``portalController.js:764-845``) — la fonction **exacte** que la route admin appelle
+    aussi : aucune perte de comportement en changeant de point d'entrée.
 
-    Pas d'authentification nécessaire en dev (``should_control_private_requests =
-    false`` côté nœud) — à vérifier si utilisé contre un nœud non-dev.
+    ``metadonnees`` : dicts bruts tels que retournés par ``toutes_metadonnees_rudi()`` (eux-
+    mêmes issus d'un ``GET catalog/resources`` — PAS du modèle ``RudiMetadata``) : exactement
+    ce que le nœud a déjà validé et stocké. Pas de round-trip ``RudiMetadata.from_json()``/
+    ``to_json_str()`` ici (voir ``_put_metadata``) : ce détour n'a de sens que pour une
+    métadonnée fraîchement construite par ``construire_rudi_metadata()`` — le réappliquer à
+    un dict déjà authentique n'apporterait rien et réintroduirait le risque de perte de
+    ``summary[].html`` que ``_put_metadata()`` contourne. Même pattern déjà utilisé ailleurs
+    dans ce fichier pour les organisations (``publier_dataset()``,
+    ``writer.connector.put_catalog("organizations", ...)`` avec un dict brut fusionné).
 
-    Retourne ``{"ok": n, "echecs": [(global_id, erreur), ...]}``. Best-effort par id :
-    une erreur sur un id n'interrompt pas le traitement des suivants.
+    Un seul writer créé et réutilisé pour toute la liste (JAMAIS un writer par ressource :
+    ``RudiNodeWriter`` fait un vrai ``POST front/login`` au premier usage — un par ressource
+    serait un login par ressource pour rien). Pause de ``pause_s`` secondes ENTRE chaque PUT
+    (jamais après le dernier) : ``sendToPortal()`` côté nœud n'est **pas awaited** par
+    ``overwriteMetadata()`` (fire-and-forget, ``.then()``/``.catch()`` seulement) — des PUT
+    consécutifs sans pause déclenchent donc des ``sendMetadataToPortal()`` concurrents côté
+    nœud, qui surchargent le precheck konsult du portail exactement comme l'ancien lot de la
+    route admin (vécu : 112 ids/paquets de 20 → 147 refus). Ce risque de concurrence est
+    intrinsèque à ``sendToPortal()``, pas à la route admin — il persiste après ce changement
+    de point d'entrée.
+
+    Retourne ``{"ok": n, "echecs": [(global_id, erreur), ...]}``. ``ok`` compte les PUT
+    **acceptés par le nœud** (2xx) — pas la confirmation que ``sendToPortal()`` a abouti côté
+    portail (fire-and-forget + gating sur ``areAllMediaAvailable``, indépendant du PUT
+    lui-même) : vérifier le résultat réel en aval (``metadata_status`` côté nœud, ou
+    ``{portail}/konsult/v1/datasets/{id}/metadatas``). Best-effort par ressource : une erreur
+    n'interrompt pas le traitement des suivantes.
     """
-    url = f"{url_catalog(conf)}/admin/portal/resources/send"
+    writer = _creer_writer(conf)
     ok = 0
     echecs: list[tuple[str, str]] = []
-    for i, global_id in enumerate(global_ids):
+    for i, meta in enumerate(metadonnees):
+        global_id = meta.get("global_id", "?")
         try:
-            r = session.post(url, json=[global_id], timeout=30)
-            if r.status_code >= 400:
-                echecs.append((global_id, f"{r.status_code} {r.text[:200]}"))
-            else:
-                ok += 1
+            writer.connector.put_catalog("resources", meta)
+            ok += 1
         except Exception as e:
             echecs.append((global_id, str(e)))
-        if i < len(global_ids) - 1:
+        if i < len(metadonnees) - 1:
             time.sleep(pause_s)
     return {"ok": ok, "echecs": echecs}
 

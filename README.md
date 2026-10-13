@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_noeud()` (renvoi sérialisé vers le portail via la route admin du nœud). |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin). |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 
 ## Organisations productrices et validation portail
@@ -146,12 +146,20 @@ nouvellement validées et isolent les ressources locales concernées :
   métadonnées (ex. `toutes_metadonnees_rudi()`) sur `producer.organization_id`.
 
 Portée depuis `moissonneur-ods` (2026-10-11) pour être partagée le 2026-10-13, à la
-demande de son usage par `moissonneuse-batteuse`. **Le renvoi lui-même n'est volontairement
-pas unifié** : chaque projet pousse différemment (`moissonneur-ods` pousse directement vers
-Kalim, `moissonneuse-batteuse` passe par la route admin du nœud via
-`renvoyer_ressources_noeud(conf, global_ids)` — un `global_id` à la fois, pause de 2s entre
-chaque, jamais en lot : cette route n'a aucune limite de concurrence interne et un lot
-surcharge le service de consultation du portail).
+demande de son usage par `moissonneuse-batteuse`. Le renvoi lui-même est désormais unifié
+aussi, via `renvoyer_ressources_connues(conf, metadonnees)` — **jamais** la route admin du
+nœud (`/catalog/admin/portal/resources/send`, qui exige un profil — `rudi_api_pm`/Postman —
+qu'aucun producteur/harvester ne doit détenir), ni un push direct vers Kalim avec le compte
+ROBOT du portail (ce que faisait `moissonneur-ods` jusqu'au 2026-10-13) : un producteur
+normal dépose sur son nœud, c'est tout. Un simple `PUT /catalog/v1/resources` (route
+producteur normale, celle que `publier_dataset()` utilise déjà) suffit : le nœud
+(`overwriteMetadata` → `sendToPortal`) relaie lui-même vers le portail dès que ses médias
+sont disponibles — indépendant du statut de validation de l'organisation. Un `global_id` (un
+dict de métadonnées, en l'occurrence) à la fois, pause de 2s entre chaque, **jamais en lot** :
+`sendToPortal()` côté nœud est fire-and-forget (pas attendu par le PUT qui le déclenche) —
+des PUT consécutifs sans pause déclenchent donc des envois concurrents qui peuvent
+surcharger le service de consultation du portail, quel que soit le point d'entrée qui les a
+lancés (route admin ou route producteur).
 
 ## Découplage
 

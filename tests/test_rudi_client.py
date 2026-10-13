@@ -16,7 +16,7 @@ from rudi_harvest_toolkit.rudi_client import (
     lister_organisations,
     marquer_organisations_traitees,
     organisations_nouvellement_validees,
-    renvoyer_ressources_noeud,
+    renvoyer_ressources_connues,
     ressources_pour_organisations,
     supprimer_dataset_portail,
 )
@@ -130,41 +130,70 @@ class TestRessourcesPourOrganisations(unittest.TestCase):
         )
 
 
-class TestRenvoyerRessourcesNoeud(unittest.TestCase):
-    def test_un_appel_par_global_id_avec_pause_entre_chaque(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
-        reponse = mock.Mock(status_code=200, text="")
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
-             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep") as dodo:
-            sess.post.return_value = reponse
-            bilan = renvoyer_ressources_noeud(conf, ["g1", "g2", "g3"], pause_s=2.0)
-        self.assertEqual(bilan, {"ok": 3, "echecs": []})
-        self.assertEqual(sess.post.call_count, 3)
-        for appel, gid in zip(sess.post.call_args_list, ["g1", "g2", "g3"]):
-            self.assertEqual(appel.args[0], "http://n:3030/catalog/admin/portal/resources/send")
-            self.assertEqual(appel.kwargs["json"], [gid])
-        # pause entre chaque, pas après le dernier
-        self.assertEqual(dodo.call_count, 2)
+class TestRenvoyerRessourcesConnues(unittest.TestCase):
+    _SUMMARY_RICHE = [{"lang": "fr", "text": "Un résumé.", "html": "<p>Un résumé.</p>"}]
 
-    def test_echec_sur_un_id_n_interrompt_pas_les_suivants(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
-        rep_ok = mock.Mock(status_code=200, text="")
-        rep_ko = mock.Mock(status_code=500, text="Internal Server Error")
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+    def test_un_put_catalog_par_ressource_avec_pause_entre_chaque(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        metas = [
+            {"global_id": "g1", "summary": self._SUMMARY_RICHE},
+            {"global_id": "g2", "summary": self._SUMMARY_RICHE},
+            {"global_id": "g3", "summary": self._SUMMARY_RICHE},
+        ]
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep") as dodo:
+            bilan = renvoyer_ressources_connues(conf, metas, pause_s=2.0)
+        self.assertEqual(bilan, {"ok": 3, "echecs": []})
+        creer.assert_called_once_with(conf)  # un seul writer, jamais un par ressource
+        put = creer.return_value.connector.put_catalog
+        self.assertEqual(put.call_count, 3)
+        for appel, meta in zip(put.call_args_list, metas):
+            self.assertEqual(appel.args, ("resources", meta))  # dict brut, sans transformation
+            # le résumé riche (summary[].html) traverse intact — pas de round-trip RudiMetadata
+            self.assertEqual(appel.args[1]["summary"], self._SUMMARY_RICHE)
+        self.assertEqual(dodo.call_count, 2)  # pause entre chaque, pas après la dernière
+
+    def test_un_seul_element_aucune_pause(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer"), \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep") as dodo:
+            bilan = renvoyer_ressources_connues(conf, [{"global_id": "g1"}])
+        self.assertEqual(bilan, {"ok": 1, "echecs": []})
+        dodo.assert_not_called()
+
+    def test_liste_vide(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer"), \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep") as dodo:
+            bilan = renvoyer_ressources_connues(conf, [])
+        self.assertEqual(bilan, {"ok": 0, "echecs": []})
+        dodo.assert_not_called()
+
+    def test_echec_sur_une_ressource_n_interrompt_pas_les_suivantes(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        metas = [{"global_id": "g1"}, {"global_id": "g2"}]
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
              mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
-            sess.post.side_effect = [rep_ok, rep_ko]
-            bilan = renvoyer_ressources_noeud(conf, ["g1", "g2"])
+            creer.return_value.connector.put_catalog.side_effect = [None, Exception("500 Internal Server Error")]
+            bilan = renvoyer_ressources_connues(conf, metas)
         self.assertEqual(bilan["ok"], 1)
-        self.assertEqual(len(bilan["echecs"]), 1)
-        self.assertEqual(bilan["echecs"][0][0], "g2")
+        self.assertEqual(bilan["echecs"], [("g2", "500 Internal Server Error")])
 
     def test_exception_reseau_comptee_comme_echec(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
              mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
-            sess.post.side_effect = Exception("réseau indisponible")
-            bilan = renvoyer_ressources_noeud(conf, ["g1"])
+            creer.return_value.connector.put_catalog.side_effect = Exception("réseau indisponible")
+            bilan = renvoyer_ressources_connues(conf, [{"global_id": "g1"}])
         self.assertEqual(bilan, {"ok": 0, "echecs": [("g1", "réseau indisponible")]})
+
+    def test_global_id_absent_reste_exploitable(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
+            creer.return_value.connector.put_catalog.side_effect = Exception("boom")
+            bilan = renvoyer_ressources_connues(conf, [{"resource_title": "sans global_id"}])
+        self.assertEqual(bilan, {"ok": 0, "echecs": [("?", "boom")]})
 
 
 class TestMediaFileDejaComplet(unittest.TestCase):
