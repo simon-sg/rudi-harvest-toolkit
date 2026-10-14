@@ -36,41 +36,64 @@ pipelines, pas un cas particulier.
 
 ### Règles (apprises par le test réel, à appliquer par défaut)
 
-1. **Ordre des UUID : demander AVANT de décider `organization_id`.** Le portail assigne son
-   propre UUID et ignore celui qu'on lui propose dans le corps de la requête. Il faut donc
-   appeler `demander_creation_organisation()` **avant** de fixer `organization_id`, et
-   adopter l'UUID **retourné** — jamais l'inverse, sinon le rapport de validation que le
-   portail renverra plus tard au nœud ne pourra pas se raccrocher à la bonne organisation.
-   (C'est exactement ce que fait `publier_dataset()`.)
-2. **Ne pas appeler `linked-producers/request` explicitement.** Le portail génère
-   automatiquement la tâche de rattachement du provider à la suite de la demande de
-   création (vérifié : une 2e tâche apparaît dans la file de modération sans action de
-   notre part). Un appel explicite à ce stade échoue (`400 "Organization is not in a valid
-   state"`, l'organisation n'étant pas encore validée).
-3. **Identifiants nœud ≠ identifiants portail.** Le login/mot de passe manager du **nœud**
-   (compte local, ex. base SQLite du nœud — `admin`/`admin` en local) et les identifiants
-   ROBOT du **portail** (compte ACL/OAuth2, ex. UUID + mot de passe généré) sont deux
-   systèmes d'authentification **totalement distincts**. Ils se configuent séparément :
-   `usr`/`pwd` pour le nœud, `usr_portail`/`pwd_portail` pour le portail (s'ils manquent,
-   repli sur `usr`/`pwd`). Un `401 invalid_client` signale typiquement qu'on a fourni des
-   identifiants nœud, jamais enregistrés côté ACL portail comme client OAuth2.
+1. **La création passe par le NŒUD, pas directement par le portail (correction du
+   2026-10-14, remplace une version précédente de cette section).** Voir
+   `demander_creation_organisation()` ci-dessous — c'est le changement le plus important :
+   l'ancienne implémentation appelait le portail directement et exigeait des identifiants
+   ROBOT **portail** séparés, introuvables/non fonctionnels sur un nœud externe réel (démo
+   RM, `401 invalid_client`). La bonne méthode n'a besoin que de l'auth **nœud** habituelle.
+2. **Ordre des UUID : laisser le nœud/portail décider `organization_id`, jamais nous.**
+   Ni notre code ni l'appelant ne doivent fixer `organization_id` avant d'appeler
+   `demander_creation_organisation()` — adopter l'UUID **retourné**. (C'est exactement ce
+   que fait `publier_dataset()`.)
+3. **Ne pas appeler `linked-producers/request` explicitement.** Le portail génère
+   automatiquement la tâche de rattachement du provider à la suite de la validation de la
+   demande de création (vérifié en local ET en conditions réelles RM : une 2e tâche apparaît
+   dans la file de modération sans action de notre part). Un appel explicite à ce stade
+   échoue (`400 "Organization is not in a valid state"`, l'organisation n'étant pas encore
+   validée).
+4. **Identifiants nœud ≠ identifiants portail — mais seules les fonctions `demander_*`
+   d'UPDATE/DELETE d'organisation (pas la création) en ont encore besoin.** Le login/mot de
+   passe manager du **nœud** (compte local) et les identifiants ROBOT du **portail** (compte
+   ACL/OAuth2) restent deux systèmes d'authentification distincts — `usr`/`pwd` pour le
+   nœud, `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si absents). Un
+   `401 invalid_client` sur un appel portail direct (mise à jour, détachement, suppression —
+   jamais la création désormais) signale typiquement des identifiants nœud fournis à la
+   place d'identifiants ACL portail.
 
 ### `demander_creation_organisation(conf, organization)`
 
-Si `conf["url_portail"]` est renseigné (clé optionnelle de `rudi_node.json`, en plus de
-`url`/`url_catalog`/`usr`/`pwd`), obtient un token OAuth2 auprès du **portail** avec les
-identifiants ROBOT (rôle `PROVIDER` requis côté Strukture — c'est le rôle normal d'un compte
-nœud), puis appelle `POST {url_portail}/strukture/v1/organizations/request`, qui crée une
-vraie tâche BPMN de modération. **Best-effort** : sans `url_portail`, ou en cas d'échec
-d'authentification/réseau, ne bloque jamais la publication du dataset — journalise un
-avertissement et continue.
+**Crée l'organisation sur le NŒUD** (`POST {url_catalog}/organizations`, authentification
+nœud habituelle — celle déjà utilisée pour publier des ressources, **aucun identifiant
+portail séparé requis**). Le nœud **lui-même** relaie la demande au portail
+(`genericController.js::newRudiObject` → `createPortalOrganization()`, côté `rudi-catalog`)
+en utilisant l'identité propre du nœud, configurée une fois pour toutes au raccordement —
+exactement ce que fait l'UI du nœud quand un humain crée une organisation à la main.
 
-**Test en local** : les services portail `strukture` (envoi du rapport de validation),
-`kalim` (moissonnage) et `selfdata` (appariement) doivent pouvoir résoudre l'URL du nœud
-source natif (`host:4030`) depuis l'intérieur de leurs conteneurs. Sans
-`extra_hosts: ["host.docker.internal:host-gateway"]` dans `docker-compose-source.yml`,
-l'appel échoue **silencieusement** (simple log côté Java, jamais une erreur visible) — voir
-la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
+**Pourquoi ce n'est plus un appel portail direct** : une version précédente de cette
+fonction appelait `POST {url_portail}/strukture/v1/organizations/request` et exigeait donc
+des identifiants ROBOT portail séparés. Sur un nœud externe réel (démo RM), ces
+identifiants n'existaient pas (`401 invalid_client`), alors que **le compte nœud existant
+fonctionne parfaitement** pour obtenir le même résultat via cette route — confirmé par
+lecture du code source du nœud et par un test de bout en bout contre un portail de
+préprod réel (création → `organization_status=DRAFT` → validation modérateur →
+`VALIDATED`, cascade de rattachement automatique incluse).
+
+⚠️ **Le verbe HTTP exact est `POST`, pas `PUT`.** `rudi_node_write.get_or_create_org_with_info()`
+(PUT) existe mais échoue en conditions réelles sur certains nœuds (`503`, relais interne
+manager→catalog en défaut) — ne pas s'y fier à la place de l'appel `POST` direct utilisé ici.
+
+**Best-effort** : en cas d'échec (nœud injoignable, etc.), ne bloque jamais la publication
+du dataset — journalise un avertissement et continue (`organization_id` généré localement
+en repli, comportement historique).
+
+**Test en local** : si le nœud et le portail sont tous deux en conteneurs Docker, le
+service `strukture` (qui reçoit l'appel du nœud et envoie plus tard le rapport de
+validation) doit pouvoir résoudre l'URL du nœud source natif (`host:4030`) depuis
+l'intérieur de son conteneur. Sans `extra_hosts: ["host.docker.internal:host-gateway"]`
+dans `docker-compose-source.yml`, l'appel échoue **silencieusement** côté portail (simple
+log Java, jamais une erreur visible) — voir la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
+Sans objet pour un nœud/portail externes réels (pas de conteneurs à notre charge).
 
 ### `demander_mise_a_jour_organisation(conf, organization, image_id=None)`
 
@@ -146,6 +169,16 @@ asynchrone** traité par le planificateur Kalim — laisser quelques minutes ava
 conclure à un blocage). Portée depuis `moissonneur-ods` pour être partagée, notamment par
 `moissonneuse-batteuse`. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` =
 pas de `url_portail`, aucune requête).
+
+⚠️ **À vérifier en conditions réelles, pas encore confirmé empiriquement** (lecture de code
+seulement, `genericController.js::deleteSingleObject`) : un `DELETE /resources/{id}` sur le
+**nœud** semble déjà appeler lui-même `deletePortalMetadata()` — donc relayer la suppression
+au portail avec l'identité du nœud, comme pour la création d'organisation — **mais
+uniquement si la ressource n'a pas de `collection_tag`** (notre cas : `moissonneuse-batteuse`
+n'en pose jamais). Si confirmé, `supprimer_dataset_portail()` deviendrait redondante pour nos
+ressources (le nœud ferait déjà le travail). Ne pas supposer ceci acquis sans un test réel
+dédié — même type de piège que la création d'organisation (PUT vs POST), où la lecture de
+code seule avait mené à une fausse piste.
 
 ### Renvoi après validation d'organisation
 

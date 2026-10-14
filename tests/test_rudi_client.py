@@ -261,79 +261,71 @@ class TestDedoublonnerMediasFile(unittest.TestCase):
         _, fichiers_ok = _dedoublonner_medias_file(medias, ["/d/a.csv"])
         self.assertEqual(fichiers_ok, ["/d/a.csv"])
 
+
+class TestDemanderCreationOrganisation(unittest.TestCase):
+    """Depuis le 2026-10-14 : création via le NŒUD (POST catalog/organizations avec
+    l'auth nœud habituelle), plus un appel portail direct — voir le docstring de
+    demander_creation_organisation() pour le contexte complet (401 invalid_client
+    rencontré en conditions réelles contre le portail de préprod RM avec des
+    identifiants portail séparés, alors que le compte nœud existant fonctionne pour
+    cette même opération via cette route)."""
+
     ORG = {"organization_id": "org-1", "organization_name": "MyDataBall",
            "organization_summary": "Producteur de données ouvertes."}
 
-    def test_sans_url_portail_no_op(self):
+    def test_succes_retourne_luuid_cree_sur_le_noeud(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
-        sess.post.assert_not_called()
-
-    def test_succes_retourne_luuid_du_portail_meme_different_de_celui_envoye(self):
-        """Vérifié en conditions réelles contre le portail ROOB local : le portail
-        assigne son propre UUID, différent de celui qu'on lui propose dans le corps."""
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_create = mock.Mock(status_code=200)
-        rep_create.json.return_value = "uuid-assigne-par-le-portail"
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = [rep_token, rep_create]
+        reponse = {"organization_id": "uuid-noeud", "organization_name": "MyDataBall",
+                   "organization_status": "DRAFT"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = reponse
             resultat = demander_creation_organisation(conf, self.ORG)
-        self.assertEqual(resultat, "uuid-assigne-par-le-portail")
-        self.assertEqual(sess.post.call_count, 2)  # jamais de 3e appel (linked-producers, inutile)
-        args_create, kwargs_create = sess.post.call_args_list[1]
-        self.assertEqual(args_create[0], "http://portail.test/strukture/v1/organizations/request")
-        self.assertEqual(kwargs_create["json"]["organization_id"], "org-1")  # envoyé, mais ignoré côté portail
-        self.assertEqual(kwargs_create["headers"]["Authorization"], "Bearer tok123")
+        self.assertEqual(resultat, "uuid-noeud")
+        creer.assert_called_once_with(conf)
+        _, kwargs = creer.return_value.connector.request.call_args
+        self.assertEqual(kwargs["relative_url"], "catalog/organizations")
+        self.assertEqual(kwargs["req_method"], "POST")
+        self.assertEqual(kwargs["body"]["organization_name"], "MyDataBall")
+        self.assertNotIn("organization_id", kwargs["body"])  # décidé par le nœud/portail, jamais par nous
 
-    def test_auth_portail_echoue_retourne_none_sans_autre_appel(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = Exception("réseau indisponible")
-            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
-        sess.post.assert_called_once()  # seule la tentative de token, rien après
-
-    def test_transmet_organization_url_au_portail(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
+    def test_transmet_summary_et_url(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_create = mock.Mock(status_code=200)
-        rep_create.json.return_value = "uuid-portail"
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = [rep_token, rep_create]
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
             demander_creation_organisation(conf, org)
-        corps = sess.post.call_args_list[1][1]["json"]
+        corps = creer.return_value.connector.request.call_args[1]["body"]
+        self.assertEqual(corps["organization_summary"], "Producteur de données ouvertes.")
         self.assertEqual(corps["organization_url"], "https://www.mydataball.fr")
 
     def test_url_absente_non_envoyee(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_create = mock.Mock(status_code=200)
-        rep_create.json.return_value = "uuid-portail"
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = [rep_token, rep_create]
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
             demander_creation_organisation(conf, self.ORG)
-        corps = sess.post.call_args_list[1][1]["json"]
+        corps = creer.return_value.connector.request.call_args[1]["body"]
         self.assertNotIn("organization_url", corps)
 
-    def test_creation_refusee_par_le_portail_retourne_none(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_create = mock.Mock(status_code=403, text="Forbidden")
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = [rep_token, rep_create]
+    def test_reponse_sans_organization_id_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"message": "inattendu"}
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
-        self.assertEqual(sess.post.call_count, 2)
+
+    def test_echec_noeud_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.side_effect = Exception("503 catalog unreachable")
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+
+    def test_aucun_identifiant_portail_requis(self):
+        """Contrairement à l'ancienne implémentation : ne nécessite ni url_portail, ni
+        usr_portail/pwd_portail — seule l'auth nœud habituelle est utilisée."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}  # pas de clé *_portail
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
+            resultat = demander_creation_organisation(conf, self.ORG)
+        self.assertEqual(resultat, "uuid-noeud")
 
 
 class TestDemanderMiseAJourOrganisation(unittest.TestCase):

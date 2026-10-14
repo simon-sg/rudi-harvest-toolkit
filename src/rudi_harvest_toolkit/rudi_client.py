@@ -323,82 +323,63 @@ def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
 
 
 def demander_creation_organisation(conf: dict, organization: dict) -> str | None:
-    """Demande la création d'une nouvelle organisation productrice **auprès du portail**
-    (``POST {url_portail}/strukture/v1/organizations/request``, rôle PROVIDER requis —
-    exactement celui du compte ROBOT du nœud).
+    """Demande la création d'une nouvelle organisation productrice — **via le NŒUD**
+    (``POST {url_catalog}/organizations``, authentification nœud normale, celle déjà
+    utilisée pour publier des ressources), **pas un appel direct au portail**.
 
-    À la différence d'un simple ``PUT /organizations`` sur le **nœud** (ce que ce module
-    fait par ailleurs pour que la ressource publiée référence un ``organization_id``
-    valide dès maintenant, sans attendre), cet appel déclenche une vraie tâche BPMN dans
-    la file d'un modérateur portail — c'est la condition pour qu'``organization_status``
-    passe un jour à ``VALIDATED`` (champ renseigné sur le nœud uniquement par le *rapport*
-    que le portail renvoie après validation humaine, jamais par le nœud lui-même). Sans
-    cet appel, une organisation créée seulement sur le nœud n'est jamais soumise à
-    validation et reste invisible du portail — c'est le bug corrigé ici.
+    **Correction du 2026-10-14, suite à un test réel en conditions de production** :
+    la version précédente de cette fonction appelait le portail directement
+    (``POST {url_portail}/strukture/v1/organizations/request``) et exigeait donc des
+    identifiants ROBOT **portail** (``usr_portail``/``pwd_portail``) distincts des
+    identifiants **nœud**. Sur un nœud externe (démo RM), ces identifiants portail
+    séparés n'existaient pas (`401 invalid_client`), alors que le compte nœud existant
+    fonctionnait parfaitement pour la même opération via cette route.
 
-    **Le portail assigne son propre UUID, sans tenir compte de celui qu'on lui propose**
-    dans le corps de la requête (vérifié en conditions réelles contre le portail ROOB
-    local — un `organization_id` différent de celui envoyé a été retourné). L'UUID
-    renvoyé par cette fonction est donc le seul à utiliser comme `organization_id` de
-    l'organisation — c'est à **l'appelant** de l'adopter, pas de décider le sien avant
-    d'appeler cette fonction, sous peine qu'il ne corresponde jamais à ce que le portail
-    reportera plus tard au nœud.
+    **Confirmé en conditions réelles (code source du nœud, `rudi-catalog`,
+    `genericController.js::newRudiObject`) et par un test de bout en bout contre le
+    portail de recette RM** : un `POST /organizations` sur le **nœud**, avec une
+    organisation qui n'existe pas encore, déclenche *lui-même* l'appel
+    `createPortalOrganization()` côté nœud — qui relaie la demande au portail en
+    utilisant l'identité propre du nœud (celle configurée quand le nœud a été raccordé
+    au portail), jamais celle de l'appelant. C'est exactement ce que fait l'UI du nœud
+    quand un humain crée une organisation à la main — vérifié en parallèle par Simon
+    (même résultat, même compte). **Aucun identifiant portail séparé n'est donc
+    nécessaire** : l'authentification nœud habituelle suffit.
 
-    Le rattachement au provider (`linked-producers/request`) n'est **volontairement pas**
-    demandé ici : confirmé en conditions réelles qu'il est généré automatiquement par le
-    portail à la suite de la demande de création (vérifié : une 2e tâche de rattachement
-    est apparue dans la file de modération sans action explicite de notre part) — un
-    appel explicite échoue d'ailleurs à ce stade (`400 "Organization is not in a valid
-    state"`, l'organisation n'étant pas encore validée).
+    ⚠️ Un simple ``PUT /organizations`` (utilisé ailleurs par
+    ``rudi_node_write.get_or_create_org_with_info()``) ne suffit **pas** : testé en
+    conditions réelles, cette route a échoué (`503`, relais interne manager→catalog en
+    défaut sur ce nœud) — **le verbe HTTP exact est `POST`**, pas `PUT`, contrairement à
+    ce qu'on pourrait déduire de la lib externe qui n'expose que la variante PUT.
 
-    Nécessite ``conf["url_portail"]`` (optionnel — absent : no-op, retourne ``None``,
-    comportement historique sans portail intégré préservé). Authentification portail via
-    ``conf["usr_portail"]``/``conf["pwd_portail"]`` si présents, sinon repli sur
-    ``conf["usr"]``/``conf["pwd"]`` — **à ne pas confondre** : les identifiants manager du
-    **nœud** (compte local, ex. base SQLite du nœud) et les identifiants ROBOT du
-    **portail** (compte ACL/OAuth2) sont deux systèmes d'authentification distincts,
-    souvent différents (vérifié en local : `admin`/`admin` côté nœud, UUID+mot de passe
-    généré côté portail). Un `401 invalid_client` à ce stade indique typiquement que les
-    identifiants fournis ne sont que des identifiants nœud, jamais enregistrés côté ACL
-    portail comme client OAuth2 — à vérifier avec l'équipe ayant fourni les accès.
-    Toujours **best-effort** :
-    ne lève jamais, journalise et retourne ``None`` en cas d'échec — ne bloque jamais la
-    publication du dataset lui-même, qui doit pouvoir avancer même si le portail est
-    indisponible ou si l'authentification portail échoue.
+    Le rattachement au provider (`linked-producers/request`) n'est **jamais demandé
+    ici** : confirmé en conditions réelles (local ET RM) qu'il est généré
+    automatiquement par le portail à la suite de la validation de la demande de
+    création — une 2e tâche de modération apparaît sans action explicite de notre part.
+
+    Toujours **best-effort** : ne lève jamais, journalise et retourne ``None`` en cas
+    d'échec (nœud injoignable, organisation déjà existante avec ce nom, etc.) — ne
+    bloque jamais la publication du dataset lui-même.
     """
-    url_portail = conf.get("url_portail")
-    if not url_portail:
-        return None
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
-        token = _token_portail(url_portail, usr_portail, pwd_portail)
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande de validation d'organisation envoyée ({e})")
-        return None
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    # organization_id requis par le schéma mais ignoré par le portail (voir docstring) —
-    # une valeur jetable suffit, seul l'UUID retourné compte.
-    corps = {
-        "organization_id": organization.get("organization_id") or str(uuid.uuid4()),
-        "organization_name": organization.get("organization_name", ""),
-    }
-    if organization.get("organization_summary"):
-        corps["organization_summary"] = organization["organization_summary"]
-    if organization.get("organization_url"):
-        corps["organization_url"] = organization["organization_url"]
-    try:
-        r = session.post(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request",
-                          json=corps, headers=headers, timeout=30)
-        if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : demande de création d'organisation refusée par le portail "
-                  f"({r.status_code}) : {r.text[:200]}")
+        writer = _creer_writer(conf)
+        corps = {"organization_name": organization.get("organization_name", "")}
+        if organization.get("organization_summary"):
+            corps["organization_summary"] = organization["organization_summary"]
+        if organization.get("organization_url"):
+            corps["organization_url"] = organization["organization_url"]
+        resultat = writer.connector.request(
+            relative_url="catalog/organizations", req_method="POST",
+            body=corps, headers=writer.connector._id_headers)
+        org_id = resultat.get("organization_id") if isinstance(resultat, dict) else None
+        if not org_id:
+            print(f"  [RUDI] AVERTISSEMENT : création d'organisation sur le nœud sans organization_id en retour : {resultat}")
             return None
-        org_uuid = r.json()
-        print(f"  [RUDI] demande de validation portail envoyée pour l'organisation « {corps['organization_name']} » (uuid={org_uuid})")
-        return org_uuid
+        print(f"  [RUDI] organisation « {corps['organization_name']} » créée sur le nœud "
+              f"(uuid={org_id}, statut={resultat.get('organization_status')}) — relayée au portail s'il est connecté.")
+        return org_id
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec de la demande de validation portail de l'organisation : {e}")
+        print(f"  [RUDI] AVERTISSEMENT : échec de la création d'organisation sur le nœud : {e}")
         return None
 
 
