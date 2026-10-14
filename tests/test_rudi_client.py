@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from rudi_harvest_toolkit.rudi_client import (
+    _dedoublonner_medias_file,
     _media_file_deja_complet,
     charger_conf_rudi,
     demander_creation_organisation,
@@ -222,7 +223,44 @@ class TestMediaFileDejaComplet(unittest.TestCase):
         self.assertFalse(_media_file_deja_complet(media))
 
 
-class TestDemanderCreationOrganisation(unittest.TestCase):
+class TestDedoublonnerMediasFile(unittest.TestCase):
+    def test_retire_les_doublons_et_realigne_les_fichiers(self):
+        medias = [
+            {"media_type": "FILE", "media_name": "a.csv"},
+            {"media_type": "FILE", "media_name": "b.json"},
+            {"media_type": "FILE", "media_name": "a.csv"},
+            {"media_type": "FILE", "media_name": "b.json"},
+            {"media_type": "SERVICE", "media_name": "source-metadata"},
+        ]
+        fichiers = ["/d/a.csv", "/d/b.json", "/d/a.csv", "/d/b.json"]
+        medias_ok, fichiers_ok = _dedoublonner_medias_file(medias, fichiers)
+        self.assertEqual([m["media_name"] for m in medias_ok],
+                         ["a.csv", "b.json", "source-metadata"])
+        self.assertEqual(fichiers_ok, ["/d/a.csv", "/d/b.json"])
+
+    def test_aucun_doublon_renvoie_les_entrees_inchangees(self):
+        medias = [{"media_type": "FILE", "media_name": "a.csv"},
+                  {"media_type": "SERVICE", "media_name": "source-metadata"}]
+        medias_ok, fichiers_ok = _dedoublonner_medias_file(medias, ["/d/a.csv"])
+        self.assertEqual(medias_ok, medias)
+        self.assertEqual(fichiers_ok, ["/d/a.csv"])
+
+    def test_service_du_meme_nom_non_dedoublonne(self):
+        # Les SERVICE ne sont pas indexés par fichiers_filtres et portent des URLs distinctes.
+        medias = [{"media_type": "FILE", "media_name": "a.csv"},
+                  {"media_type": "SERVICE", "media_name": "dup"},
+                  {"media_type": "SERVICE", "media_name": "dup"}]
+        medias_ok, _ = _dedoublonner_medias_file(medias, ["/d/a.csv"])
+        self.assertEqual(len(medias_ok), 3)
+
+    def test_fichier_manquant_pour_un_media_file_non_ajoute(self):
+        # Plus de médias FILE que de chemins fournis : le FILE en trop est conservé
+        # (dédoublonné) mais n'ajoute pas de chemin.
+        medias = [{"media_type": "FILE", "media_name": "a.csv"},
+                  {"media_type": "FILE", "media_name": "b.json"}]
+        _, fichiers_ok = _dedoublonner_medias_file(medias, ["/d/a.csv"])
+        self.assertEqual(fichiers_ok, ["/d/a.csv"])
+
     ORG = {"organization_id": "org-1", "organization_name": "MyDataBall",
            "organization_summary": "Producteur de données ouvertes."}
 

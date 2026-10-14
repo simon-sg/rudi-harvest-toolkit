@@ -810,6 +810,45 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
         return False
 
 
+def _dedoublonner_medias_file(
+    medias: list[dict],
+    fichiers_filtres: list[str],
+) -> tuple[list[dict], list[str]]:
+    """
+    Retire les médias FILE dupliqués (même ``media_name``) et réaligne ``fichiers_filtres``.
+
+    Deux ressources sources au même titre produisent le même slug, donc le même nom de
+    fichier filtré : ``available_formats`` porte alors deux médias FILE identiques (même
+    ``media_name``, même ``media_id``). Le nœud les publie au portail sous le même
+    identifiant et Kalim plante à l'intégration (bug A7 : IllegalStateException « Duplicate
+    key » → rapport ERR-500) — le JDD repasse `refused` alors qu'il est déjà intégré.
+
+    ``fichiers_filtres`` référence les médias FILE par position (les FILE sont toujours en
+    tête d'``available_formats``, cf. ``publish_rudi._fichiers_a_uploader``) : on garde la
+    première occurrence de chaque ``media_name`` et on n'émet que les chemins correspondants.
+    Retourne ``(medias_dedoublonnes, fichiers_realignes)`` — les deux listes retournées
+    peuvent être identiques aux entrées s'il n'y a aucun doublon.
+    """
+    medias_uniques: list[dict] = []
+    fichiers_alignes: list[str] = []
+    noms_file_vus: set[str] = set()
+    index_fichier = 0
+    for media in medias:
+        if media.get("media_type") != "FILE":
+            medias_uniques.append(media)
+            continue
+        chemin = fichiers_filtres[index_fichier] if index_fichier < len(fichiers_filtres) else None
+        index_fichier += 1
+        nom_media = media.get("media_name", "")
+        if nom_media in noms_file_vus:
+            continue
+        noms_file_vus.add(nom_media)
+        medias_uniques.append(media)
+        if chemin is not None:
+            fichiers_alignes.append(chemin)
+    return medias_uniques, fichiers_alignes
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,
@@ -901,6 +940,13 @@ def publier_dataset(
         rudi_metadata["contacts"] = [contact.to_json()]
 
     medias = rudi_metadata["available_formats"]
+
+    medias_dedoublonnes, fichiers_alignes = _dedoublonner_medias_file(medias, fichiers_filtres)
+    if len(medias_dedoublonnes) != len(medias):
+        print(f"  [RUDI] {len(medias) - len(medias_dedoublonnes)} média(s) FILE dupliqué(s) "
+              f"retiré(s) (sinon bug portail A7 « Duplicate key » → ERR-500).")
+        medias[:] = medias_dedoublonnes
+        fichiers_filtres = fichiers_alignes
 
     # Médias FILE écartés (upload refusé) — ne doivent pas faire échouer le reste du
     # dataset ; typiquement une variante JSON trop verbeuse d'un CSV déjà publiable
