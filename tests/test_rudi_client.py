@@ -613,59 +613,37 @@ class TestTeleverserPieceJointe(unittest.TestCase):
 
 
 class TestDemanderDetachementProducteur(unittest.TestCase):
-    def test_sans_url_portail_no_op_sans_requete(self):
+    """Depuis le 2026-10-15 : détachement via le NŒUD (GET manager/api/catalog/admin/
+    portal/organizations/{id}/detach, auth nœud habituelle), trouvé en capturant le
+    trafic réseau du bouton « détacher » de l'UI nœud (producerCard.js) — confirmé par
+    capture HAR réelle contre RM. Plus besoin de url_portail ni d'identifiants portail
+    séparés (l'ancien appel portail direct 401ait systématiquement sur RM/R7)."""
+
+    def test_succes_emet_un_get_vers_la_route_nœud(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            self.assertIsNone(demander_detachement_producteur(conf, "uuid-portail"))
-        sess.delete.assert_not_called()
-        sess.post.assert_not_called()
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            self.assertTrue(demander_detachement_producteur(conf, "uuid-org"))
+        creer.assert_called_once_with(conf)
+        _, kwargs = creer.return_value.connector.request.call_args
+        self.assertEqual(kwargs["relative_url"], "catalog/admin/portal/organizations/uuid-org/detach")
+        self.assertEqual(kwargs["req_method"], "GET")
 
-    def test_succes_emet_un_delete_vers_linked_producers_request_uuid(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_del = mock.Mock(status_code=200)
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.delete.return_value = rep_del
-            self.assertTrue(demander_detachement_producteur(conf, "uuid-portail"))
-        args, kwargs = sess.delete.call_args
-        self.assertEqual(args[0], "http://portail.test/strukture/v1/linked-producers/request/uuid-portail")
-        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
+    def test_aucun_identifiant_portail_requis(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}  # pas de clé *_portail
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer"):
+            self.assertTrue(demander_detachement_producteur(conf, "uuid-org"))
 
-    def test_auth_portail_echoue_false_sans_delete(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.side_effect = Exception("réseau indisponible")
-            self.assertFalse(demander_detachement_producteur(conf, "uuid-portail"))
-        sess.delete.assert_not_called()
+    def test_echec_noeud_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.side_effect = Exception("503 catalog unreachable")
+            self.assertFalse(demander_detachement_producteur(conf, "uuid-org"))
 
-    def test_401_renouvelle_le_token_et_rejoue(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_401 = mock.Mock(status_code=401, text="Unauthorized")
-        rep_ok = mock.Mock(status_code=200)
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.delete.side_effect = [rep_401, rep_ok]
-            self.assertTrue(demander_detachement_producteur(conf, "uuid-portail"))
-        self.assertEqual(sess.post.call_count, 2)  # token initial + renouvellement
-        self.assertEqual(sess.delete.call_count, 2)
-
-    def test_echec_404_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
-                "url_portail": "http://portail.test"}
-        rep_token = mock.Mock(status_code=200)
-        rep_token.json.return_value = {"access_token": "tok123"}
-        rep_del = mock.Mock(status_code=404, text="Not Found")
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.post.return_value = rep_token
-            sess.delete.return_value = rep_del
-            self.assertFalse(demander_detachement_producteur(conf, "uuid-portail"))
+    def test_409_tache_deja_en_attente_retourne_true(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.side_effect = Exception("HTTP ERR 409 Conflict")
+            self.assertTrue(demander_detachement_producteur(conf, "uuid-org"))
 
 
 class TestDemanderSuppressionOrganisation(unittest.TestCase):

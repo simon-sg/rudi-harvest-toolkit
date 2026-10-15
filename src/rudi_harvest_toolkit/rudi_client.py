@@ -670,9 +670,21 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict,
 
 
 def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | None:
-    """Demande le détachement du producteur (``linked_producer``) d'une organisation
-    **auprès du portail** (``DELETE {url_portail}/strukture/v1/linked-producers/request/{uuid}``,
-    rôle PROVIDER requis — même compte ROBOT que ``demander_creation_organisation()``).
+    """Demande le détachement du producteur (``linked_producer``) d'une organisation —
+    corrigé le 2026-10-15 : passe désormais par le **nœud** (``GET
+    {url_catalog}/admin/portal/organizations/{uuid}/detach``, via ``manager/api/catalog``),
+    avec l'authentification nœud habituelle — **plus besoin de ``url_portail`` ni
+    d'identifiants portail séparés**. C'est le nœud lui-même qui relaie la demande au
+    portail avec sa propre identité, exactement comme ``demander_creation_organisation()``.
+
+    Trouvé en capturant le trafic réseau du bouton « détacher » de l'UI du nœud (``rudi-
+    manager``, composant ``producerCard.js::detachProducer()`` → route
+    ``post_portal_detach_organization`` de ``rudi-catalog``, qui malgré son nom
+    s'enregistre et se consomme en ``GET``) — confirmé par capture HAR contre le nœud RM
+    (``GET .../manager/api/catalog/portal/organizations/{id}/detach`` → ``200``).
+    L'ancien appel portail direct (``DELETE {url_portail}/strukture/v1/linked-producers/
+    request/{uuid}``) échouait systématiquement (``401``) : ce compte n'a aucune identité
+    portail, ni OAuth2 ni login classique — confirmé en conditions réelles contre RM/R7.
 
     **Prérequis obligatoire avant ``demander_suppression_organisation()``** pour toute
     organisation créée par le circuit officiel : elle a automatiquement un
@@ -690,40 +702,23 @@ def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | 
     nœud reçoit aussi un rapport (``method: DETACH``) qui met à jour
     ``linked_producer_status`` localement.
 
-    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
-    Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
-    ``False`` en cas d'échec (auth portail, refus, réseau ; journalisé), ``True`` si le
-    portail a accepté la demande de détachement (tâche créée, validation modérateur
-    encore nécessaire).
+    **Best-effort** : ne lève jamais. Retourne ``False`` en cas d'échec (nœud injoignable,
+    portail non connecté côté nœud, réseau ; journalisé), ``True`` si la demande a été
+    acceptée (tâche créée **ou** déjà en attente — un ``409`` du nœud signifie qu'une
+    tâche de détachement existe déjà pour cette organisation, traité comme un succès).
     """
-    url_portail = conf.get("url_portail")
-    if not url_portail:
-        return None
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
-        token = _token_portail(url_portail, usr_portail, pwd_portail)
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de détachement producteur envoyé ({e})")
-        return False
-
-    def _detach(jeton: str):
-        return session.delete(f"{url_portail.rstrip('/')}/strukture/v1/linked-producers/request/{organization_id}",
-                              headers={"Authorization": f"Bearer {jeton}"}, timeout=30)
-
-    try:
-        r = _detach(token)
-        if r.status_code == 401:
-            token = _token_portail(url_portail, usr_portail, pwd_portail)
-            r = _detach(token)
-        if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : détachement producteur de l'organisation {organization_id[:12]}… refusé "
-                  f"par le portail ({r.status_code}) : {r.text[:200]}")
-            return False
+        writer = _creer_writer(conf)
+        writer.connector.request(
+            relative_url=f"catalog/admin/portal/organizations/{organization_id}/detach",
+            req_method="GET", headers=writer.connector._id_headers)
         print(f"  [RUDI] demande de détachement producteur envoyée pour l'organisation {organization_id[:12]}… "
               f"— validation modérateur nécessaire avant suppression.")
         return True
     except Exception as e:
+        if "409" in str(e):
+            print(f"  [RUDI] détachement producteur de l'organisation {organization_id[:12]}… déjà en attente de validation.")
+            return True
         print(f"  [RUDI] AVERTISSEMENT : échec de la demande de détachement producteur : {e}")
         return False
 
