@@ -363,7 +363,13 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     """
     try:
         writer = _creer_writer(conf)
-        corps = {"organization_name": organization.get("organization_name", "")}
+        # Requis par le nœud (constaté le 2026-10-15 contre RM : 400 « La propriété
+        # 'organization_id' doit être définie » sans ce champ — absent lors du 1er test
+        # du 2026-10-14, donc une évolution de validation côté nœud, pas un oubli
+        # initial). Le nœud accepte et renvoie cet id tel quel (pas de réassignation
+        # observée à cette étape, contrairement à l'ancienne route portail directe).
+        corps = {"organization_id": str(uuid.uuid4()),
+                 "organization_name": organization.get("organization_name", "")}
         if organization.get("organization_summary"):
             corps["organization_summary"] = organization["organization_summary"]
         if organization.get("organization_url"):

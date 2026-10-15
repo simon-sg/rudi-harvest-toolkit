@@ -286,7 +286,9 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
         self.assertEqual(kwargs["relative_url"], "catalog/organizations")
         self.assertEqual(kwargs["req_method"], "POST")
         self.assertEqual(kwargs["body"]["organization_name"], "MyDataBall")
-        self.assertNotIn("organization_id", kwargs["body"])  # décidé par le nœud/portail, jamais par nous
+        # Requis par le nœud (400 sinon, constaté le 2026-10-15) : on génère notre propre
+        # UUID et le nœud l'accepte tel quel à cette étape.
+        self.assertTrue(kwargs["body"]["organization_id"])
 
     def test_transmet_summary_et_url(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
