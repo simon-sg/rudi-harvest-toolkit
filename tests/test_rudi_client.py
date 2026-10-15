@@ -320,6 +320,19 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             creer.return_value.connector.request.side_effect = Exception("503 catalog unreachable")
             self.assertIsNone(demander_creation_organisation(conf, self.ORG))
 
+    def test_organization_id_toujours_envoye_sous_peine_de_400(self):
+        """Régression (2026-10-15) : le nœud exige organization_id dans le corps du
+        POST (400 "La propriété 'organization_id' doit être définie" sinon, constaté
+        contre RM) — absent lors du 1er test du 2026-10-14. La fonction doit toujours
+        le générer elle-même, jamais compter sur le nœud pour l'assigner."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
+            demander_creation_organisation(conf, self.ORG)
+        corps = creer.return_value.connector.request.call_args[1]["body"]
+        self.assertIn("organization_id", corps)
+        self.assertTrue(corps["organization_id"])
+
     def test_aucun_identifiant_portail_requis(self):
         """Contrairement à l'ancienne implémentation : ne nécessite ni url_portail, ni
         usr_portail/pwd_portail — seule l'auth nœud habituelle est utilisée."""
@@ -613,11 +626,13 @@ class TestTeleverserPieceJointe(unittest.TestCase):
 
 
 class TestDemanderDetachementProducteur(unittest.TestCase):
-    """Depuis le 2026-10-15 : détachement via le NŒUD (GET manager/api/catalog/admin/
-    portal/organizations/{id}/detach, auth nœud habituelle), trouvé en capturant le
-    trafic réseau du bouton « détacher » de l'UI nœud (producerCard.js) — confirmé par
-    capture HAR réelle contre RM. Plus besoin de url_portail ni d'identifiants portail
-    séparés (l'ancien appel portail direct 401ait systématiquement sur RM/R7)."""
+    """Depuis le 2026-10-15 : détachement via le NŒUD (GET manager/api/catalog/portal/
+    organizations/{id}/detach — **sans** segment `admin/`, voir test_succes_... ci-dessous ;
+    ce segment fait tomber sur la route front du manager qui redirige silencieusement (308)
+    vers l'UI, faux succès confirmé en conditions réelles), auth nœud habituelle. Trouvé en
+    capturant le trafic réseau du bouton « détacher » de l'UI nœud (producerCard.js) —
+    confirmé par capture HAR réelle contre RM. Plus besoin de url_portail ni d'identifiants
+    portail séparés (l'ancien appel portail direct 401ait systématiquement sur RM/R7)."""
 
     def test_succes_emet_un_get_vers_la_route_nœud(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
@@ -627,6 +642,17 @@ class TestDemanderDetachementProducteur(unittest.TestCase):
         _, kwargs = creer.return_value.connector.request.call_args
         self.assertEqual(kwargs["relative_url"], "catalog/portal/organizations/uuid-org/detach")
         self.assertEqual(kwargs["req_method"], "GET")
+
+    def test_pas_de_segment_admin_dans_le_chemin(self):
+        """Régression (2026-10-15) : un chemin avec `admin/` (déduit à tort de la lecture
+        du code source du nœud) fait tomber sur la route front du manager, qui redirige
+        silencieusement (308) vers l'UI — faux succès, aucune tâche créée. Confirmé en
+        conditions réelles (local) avant correction."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            demander_detachement_producteur(conf, "uuid-org")
+        _, kwargs = creer.return_value.connector.request.call_args
+        self.assertNotIn("admin/", kwargs["relative_url"])
 
     def test_aucun_identifiant_portail_requis(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}  # pas de clé *_portail

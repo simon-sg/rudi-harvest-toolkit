@@ -42,24 +42,25 @@ pipelines, pas un cas particulier.
    l'ancienne implémentation appelait le portail directement et exigeait des identifiants
    ROBOT **portail** séparés, introuvables/non fonctionnels sur un nœud externe réel (démo
    RM, `401 invalid_client`). La bonne méthode n'a besoin que de l'auth **nœud** habituelle.
-2. **Ordre des UUID : laisser le nœud/portail décider `organization_id`, jamais nous.**
-   Ni notre code ni l'appelant ne doivent fixer `organization_id` avant d'appeler
-   `demander_creation_organisation()` — adopter l'UUID **retourné**. (C'est exactement ce
-   que fait `publier_dataset()`.)
+2. **`organization_id` : généré côté client (uuid4), requis par le nœud.** Contrairement à
+   l'ancienne route portail directe (qui assignait son propre UUID en ignorant toute valeur
+   proposée), le nœud **exige** `organization_id` dans le corps du `POST` (`400` sinon,
+   constaté le 2026-10-15) et l'**honore tel quel** — c'est `demander_creation_organisation()`
+   qui génère cet UUID, l'appelant n'a rien à faire de spécial.
 3. **Ne pas appeler `linked-producers/request` explicitement.** Le portail génère
    automatiquement la tâche de rattachement du provider à la suite de la validation de la
    demande de création (vérifié en local ET en conditions réelles RM : une 2e tâche apparaît
    dans la file de modération sans action de notre part). Un appel explicite à ce stade
    échoue (`400 "Organization is not in a valid state"`, l'organisation n'étant pas encore
    validée).
-4. **Identifiants nœud ≠ identifiants portail — mais seules les fonctions `demander_*`
-   d'UPDATE/DELETE d'organisation (pas la création) en ont encore besoin.** Le login/mot de
-   passe manager du **nœud** (compte local) et les identifiants ROBOT du **portail** (compte
-   ACL/OAuth2) restent deux systèmes d'authentification distincts — `usr`/`pwd` pour le
-   nœud, `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si absents). Un
-   `401 invalid_client` sur un appel portail direct (mise à jour, détachement, suppression —
-   jamais la création désormais) signale typiquement des identifiants nœud fournis à la
-   place d'identifiants ACL portail.
+4. **Identifiants nœud ≠ identifiants portail — mais seule `demander_suppression_organisation()`
+   (pas la création, pas le détachement) en a encore besoin.** Le login/mot de passe manager
+   du **nœud** (compte local) et les identifiants ROBOT du **portail** (compte ACL/OAuth2)
+   restent deux systèmes d'authentification distincts — `usr`/`pwd` pour le nœud,
+   `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si absents). Un `401
+   invalid_client` sur un appel portail direct (suppression — plus la mise à jour, abandonnée,
+   ni le détachement, qui passe par le nœud depuis le 2026-10-15) signale typiquement des
+   identifiants nœud fournis à la place d'identifiants ACL portail.
 
 ### `demander_creation_organisation(conf, organization)`
 
