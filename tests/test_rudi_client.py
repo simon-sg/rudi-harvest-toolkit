@@ -625,7 +625,7 @@ class TestDemanderDetachementProducteur(unittest.TestCase):
             self.assertTrue(demander_detachement_producteur(conf, "uuid-org"))
         creer.assert_called_once_with(conf)
         _, kwargs = creer.return_value.connector.request.call_args
-        self.assertEqual(kwargs["relative_url"], "catalog/admin/portal/organizations/uuid-org/detach")
+        self.assertEqual(kwargs["relative_url"], "catalog/portal/organizations/uuid-org/detach")
         self.assertEqual(kwargs["req_method"], "GET")
 
     def test_aucun_identifiant_portail_requis(self):

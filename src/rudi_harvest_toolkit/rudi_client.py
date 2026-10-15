@@ -672,10 +672,19 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict,
 def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | None:
     """Demande le détachement du producteur (``linked_producer``) d'une organisation —
     corrigé le 2026-10-15 : passe désormais par le **nœud** (``GET
-    {url_catalog}/admin/portal/organizations/{uuid}/detach``, via ``manager/api/catalog``),
-    avec l'authentification nœud habituelle — **plus besoin de ``url_portail`` ni
+    {url_catalog}/portal/organizations/{uuid}/detach``, via ``manager/api/catalog``), avec
+    l'authentification nœud habituelle — **plus besoin de ``url_portail`` ni
     d'identifiants portail séparés**. C'est le nœud lui-même qui relaie la demande au
     portail avec sa propre identité, exactement comme ``demander_creation_organisation()``.
+
+    ⚠️ **Pas de ``admin/`` dans le chemin**, contrairement à ce que suggère la lecture du
+    code source du nœud (``getPrivatePath = getCatalog('admin', ...)`` dans
+    ``rudi-catalog``) : testé en conditions réelles (local, 2026-10-15), ``admin/`` fait
+    tomber sur la route générique « front » du manager qui **redirige silencieusement
+    (308) vers l'UI** au lieu d'atteindre le handler — et ``requests`` suit cette
+    redirection par défaut, donnant un faux succès (200 sur la page d'accueil, aucune
+    tâche créée). Toujours vérifier contre une capture réseau réelle, pas seulement
+    contre la lecture du code source.
 
     Trouvé en capturant le trafic réseau du bouton « détacher » de l'UI du nœud (``rudi-
     manager``, composant ``producerCard.js::detachProducer()`` → route
@@ -710,7 +719,7 @@ def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | 
     try:
         writer = _creer_writer(conf)
         writer.connector.request(
-            relative_url=f"catalog/admin/portal/organizations/{organization_id}/detach",
+            relative_url=f"catalog/portal/organizations/{organization_id}/detach",
             req_method="GET", headers=writer.connector._id_headers)
         print(f"  [RUDI] demande de détachement producteur envoyée pour l'organisation {organization_id[:12]}… "
               f"— validation modérateur nécessaire avant suppression.")
