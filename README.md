@@ -95,15 +95,21 @@ dans `docker-compose-source.yml`, l'appel échoue **silencieusement** côté por
 log Java, jamais une erreur visible) — voir la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
 Sans objet pour un nœud/portail externes réels (pas de conteneurs à notre charge).
 
-### `demander_mise_a_jour_organisation(conf, organization, image_id=None)`
+### `demander_mise_a_jour_organisation(conf, organization, image_id=None)` — ⚠️ CASSÉE, ne plus appeler
+
+**Signalée cassée par l'équipe RUDI elle-même (2026-10-15).** N'est plus appelée nulle part
+dans le flux normal (ni `publier_dataset()`, ni `enrichir_organisations.py`) — conservée
+uniquement au cas où un correctif côté RUDI la rendrait de nouveau utilisable. Une
+organisation doit désormais être complète **dès sa création**
+(`demander_creation_organisation()`) plutôt que de compter sur un enrichissement a
+posteriori. Le reste de cette section documente son fonctionnement **tel qu'il était
+censé marcher**, à titre d'archive :
 
 Met à jour une organisation **déjà connue du portail** (enrichissement
 `organization_summary`/caption/`organization_url`/logo d'un producteur préexistant) en
 passant par le **workflow BPMN officiel** `DRAFT_UPDATE` — le chemin direct
 (`PUT /organizations/request`) est bogué côté Strukture (remet à `null` des champs d'audit)
-et inutilisable. Appelé automatiquement par `enrichir_organisations.py`, en complément du
-`PUT /organizations` sur le nœud — sans cet appel, l'UI Strukture conserve l'ancienne
-description (le `PUT` nœud ne touche que la copie locale).
+et inutilisable.
 
 Enchaînement : `POST /organizations/tasks` (brouillon, `name`/`description` **requis** au
 niveau supérieur), réinjection du `form` dans `asset.form`, puis `PUT /organizations/tasks/start`.
@@ -151,13 +157,19 @@ renouvelé. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` = pa
 **Prérequis avant suppression : détacher le producteur.** Toute organisation créée par le
 circuit officiel a automatiquement un `linked_producer` (table liée par une contrainte de
 clé étrangère) ; `demander_suppression_organisation()` échoue avec un `409` tant qu'il
-n'a pas été détaché. Appeler d'abord
-`demander_detachement_producteur(conf, organization_id)` (`DELETE
-{url_portail}/strukture/v1/linked-producers/request/{uuid}`) — **celui-ci a sa propre
-tâche BPMN avec validation modérateur** (contrairement à la suppression de l'organisation) —
-et ne réessayer la suppression qu'une fois cette tâche validée dans l'UI Strukture.
-Vérifié de bout en bout le 2026-10-13 : ce n'est pas un bug RUDI, juste une étape du
-process absente de la documentation jusque-là.
+n'a pas été détaché. Appeler d'abord `demander_detachement_producteur(conf,
+organization_id)` — **celui-ci a sa propre tâche BPMN avec validation modérateur**
+(contrairement à la suppression de l'organisation) — et ne réessayer la suppression qu'une
+fois cette tâche validée dans l'UI Strukture. Vérifié de bout en bout le 2026-10-13 : ce
+n'est pas un bug RUDI, juste une étape du process absente de la documentation jusque-là.
+
+**Corrigé le 2026-10-15** : contrairement à la suppression ci-dessus (qui reste un appel
+portail direct, aucune route nœud équivalente trouvée), le détachement passe désormais
+par le **nœud** (`GET {url_catalog}/portal/organizations/{uuid}/detach` — **sans** segment
+`admin/`, sinon le manager redirige silencieusement vers l'UI et `requests` suit cette
+redirection, donnant un faux succès) — trouvé en capturant le trafic réseau du bouton
+« détacher » de l'UI du nœud. Plus besoin de `url_portail`/identifiants portail séparés
+pour cette opération.
 
 ### `supprimer_dataset(conf, global_id)` vs `supprimer_dataset_portail(conf, global_id)`
 

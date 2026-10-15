@@ -882,21 +882,18 @@ def publier_dataset(
                 print(f"  [RUDI] organisation « {org_name} » enrichie (caption + summary)")
             except Exception as e:
                 print(f"  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « {org_name} » : {e}")
-            # Propager l'enrichissement au portail (sinon l'UI Strukture garde l'ancienne
-            # description : le PUT nœud ci-dessus ne touche que la copie locale). Best-effort.
-            # `organization_url` n'existe que côté portail (le modèle nœud RudiOrganization
-            # ne porte pas ce champ) — on l'ajoute au corps de l'appel portail uniquement.
-            org_portail = dict(org_mise_a_jour)
-            if org.get("organization_url"):
-                org_portail["organization_url"] = org["organization_url"]
-            demander_mise_a_jour_organisation(conf, org_portail)
+            # Propagation au portail désactivée (2026-10-15) : demander_mise_a_jour_organisation()
+            # est signalée cassée par l'équipe RUDI elle-même. Le PUT nœud ci-dessus ne touche
+            # que la copie locale — l'UI Strukture garde l'ancienne description tant que cette
+            # fonction reste hors service. Pas de contournement : une organisation doit être
+            # complète dès sa création (demander_creation_organisation(), voir plus bas) plutôt
+            # que compter sur un enrichissement a posteriori.
         rudi_metadata["producer"] = org_existante
     elif "organization_id" not in org:
-        # L'UUID utilisé doit être celui que le portail assigne (il ignore toute valeur
-        # qu'on lui propose, voir demander_creation_organisation()) — appeler la demande
-        # AVANT de décider l'organization_id, jamais l'inverse, sinon le "rapport" de
-        # validation que le portail renverra plus tard au nœud ne pourra jamais se
-        # raccrocher à la bonne organisation.
+        # Le nœud honore l'organization_id qu'on lui propose dans le corps du POST (confirmé
+        # en conditions réelles le 2026-10-15, RM et local) — pas de réassignation à attendre
+        # ici, contrairement à l'ancienne route portail directe (`/organizations/request`) que
+        # demander_creation_organisation() n'utilise plus.
         org["organization_id"] = demander_creation_organisation(conf, org) or str(uuid.uuid4())
 
     # theme : vérifie que la valeur est dans les thèmes acceptés par ce nœud
