@@ -17,13 +17,26 @@ au sein d'un paragraphe, et pseudo-titres `# `/`## `. Tout le texte est échapp�
 insertion : aucune balise ni attribut de la source n'est jamais reproduit tel quel dans
 la sortie (liens restreints aux schémas http/https, pour éviter une injection via un
 schéma `javascript:`/`data:`).
+
+Les URLs http(s) laissées en texte brut par la source (hors syntaxe `[texte](url)` —
+ex. data.gouv.fr écrit souvent « Jeu de données source : https://... » sans crochets)
+sont elles aussi rendues cliquables (constaté en démo RM le 2026-10-16 : sans ça, le lien
+restait affiché tel quel, non cliquable, sur la fiche catalogue du portail).
 """
 import re
 
 _RE_GRAS = re.compile(r"\*\*(.+?)\*\*")
 _RE_ITALIQUE_ETOILE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
-_RE_ITALIQUE_TIRET = re.compile(r"(?<!_)_([^_\n]+?)_(?!_)")
+# toute balise <a> déjà générée (liens markdown ou autolink) contient un attribut
+# target="_blank" — un seul underscore, qui peut sinon s'appairer avec n'importe quel
+# autre underscore plus loin dans le texte (ex. 2 liens dans le même paragraphe, ou une
+# URL/un identifiant en snake_case) et faire croire à de l'italique à travers la balise.
+# Exclure ", < et > du contenu empêche la regex de jamais franchir une balise générée.
+_RE_ITALIQUE_TIRET = re.compile(r"(?<!_)_([^_\n\"<>]+?)_(?!_)")
 _RE_LIEN = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_RE_LIEN_HTML = re.compile(r"<a\b[^>]*>.*?</a>", re.IGNORECASE | re.DOTALL)
+_RE_URL_BRUTE = re.compile(r"https?://\S+", re.IGNORECASE)
+_PONCTUATION_FINALE = ".,;:!?)"
 _RE_PUCE = re.compile(r"^[-*+]\s+(.*)")
 _RE_NUMEROTE = re.compile(r"^\d+[.)]\s+(.*)")
 _RE_TITRE = re.compile(r"^(#{1,6})\s+(.*)")
@@ -43,6 +56,34 @@ def _lien_securise(url: str) -> str | None:
     return None
 
 
+def _remplacer_url_brute(m: re.Match) -> str:
+    """Convertit une URL http(s) trouvée en texte brut en lien cliquable. Rogne la
+    ponctuation finale usuelle (fin de phrase, parenthèse fermante) hors du lien."""
+    url = m.group(0)
+    fin = ""
+    while url and url[-1] in _PONCTUATION_FINALE:
+        fin = url[-1] + fin
+        url = url[:-1]
+    href = _lien_securise(url) if url else None
+    if href is None:
+        return m.group(0)
+    return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{url}</a>{fin}'
+
+
+def _autolier_urls_brutes(texte: str) -> str:
+    """Rend cliquables les URLs http(s) laissées en texte brut (hors syntaxe
+    `[texte](url)`, déjà convertie en `<a>` avant cet appel) — sans jamais retoucher un
+    `<a>` déjà généré, pour ne pas lier deux fois la même URL ni casser son `href`."""
+    morceaux = []
+    position = 0
+    for m in _RE_LIEN_HTML.finditer(texte):
+        morceaux.append(_RE_URL_BRUTE.sub(_remplacer_url_brute, texte[position:m.start()]))
+        morceaux.append(m.group(0))
+        position = m.end()
+    morceaux.append(_RE_URL_BRUTE.sub(_remplacer_url_brute, texte[position:]))
+    return "".join(morceaux)
+
+
 def _inline(texte_echappe: str) -> str:
     """Applique liens/gras/italique sur un texte déjà échappé (HTML-safe)."""
 
@@ -53,6 +94,7 @@ def _inline(texte_echappe: str) -> str:
         return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>'
 
     texte = _RE_LIEN.sub(_remplacer_lien, texte_echappe)
+    texte = _autolier_urls_brutes(texte)
     texte = _RE_GRAS.sub(r"<strong>\1</strong>", texte)
     texte = _RE_ITALIQUE_ETOILE.sub(r"<em>\1</em>", texte)
     texte = _RE_ITALIQUE_TIRET.sub(r"<em>\1</em>", texte)
