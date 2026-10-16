@@ -147,6 +147,24 @@ class TestMarkdownVersHtml(unittest.TestCase):
         html = markdown_vers_html("[https://example.com](https://example.com)")
         self.assertEqual(html.count("<a "), 1)
 
+    def test_underscores_de_noms_de_colonnes_snake_case_jamais_italique(self):
+        # Cas réel signalé sur une fiche catalogue (nœud local, 2026-10-16) : une liste
+        # de noms de colonnes en snake_case faisait croire à de l'italique entre deux
+        # identifiants sans rapport (ex. "code<em>insee, nom</em>structure").
+        texte = (
+            "Les enregistrements comportent les champs suivants : id, site, "
+            "code_insee, nom_structure, adresse, accueil_permanence, "
+            "ouverture_projet, ouverture_rdv."
+        )
+        html = markdown_vers_html(texte)
+        self.assertNotIn("<em>", html)
+        self.assertIn("code_insee, nom_structure", html)
+        self.assertIn("accueil_permanence, ouverture_projet, ouverture_rdv", html)
+
+    def test_italique_tiret_en_debut_et_fin_de_phrase(self):
+        html = markdown_vers_html("_Début_ et _fin_ de phrase.")
+        self.assertEqual(html, "<p><em>Début</em> et <em>fin</em> de phrase.</p>")
+
 
 if __name__ == "__main__":
     unittest.main()

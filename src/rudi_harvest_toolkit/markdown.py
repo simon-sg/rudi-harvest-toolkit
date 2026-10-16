@@ -27,12 +27,20 @@ import re
 
 _RE_GRAS = re.compile(r"\*\*(.+?)\*\*")
 _RE_ITALIQUE_ETOILE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
-# toute balise <a> déjà générée (liens markdown ou autolink) contient un attribut
-# target="_blank" — un seul underscore, qui peut sinon s'appairer avec n'importe quel
-# autre underscore plus loin dans le texte (ex. 2 liens dans le même paragraphe, ou une
-# URL/un identifiant en snake_case) et faire croire à de l'italique à travers la balise.
-# Exclure ", < et > du contenu empêche la regex de jamais franchir une balise générée.
-_RE_ITALIQUE_TIRET = re.compile(r"(?<!_)_([^_\n\"<>]+?)_(?!_)")
+# Règle Markdown standard (CommonMark/GFM) : un underscore collé à une lettre/chiffre
+# des deux côtés n'est jamais un délimiteur d'italique — sinon un identifiant en
+# snake_case (ex. "code_insee, nom_structure" — fréquent dans les noms de colonnes
+# listés par description_secours.py) fait croire à de l'italique entre 2 underscores
+# qui n'ont rien à voir l'un avec l'autre (constaté sur une fiche nœud local le
+# 2026-10-16 : "code<em>insee, nom</em>structure"). `(?<!\w)`/`(?!\w)` exigent un
+# caractère non alphanumérique (espace, ponctuation, début/fin de chaîne — \w couvre
+# aussi l'underscore lui-même) de part et d'autre des délimiteurs.
+# Par ailleurs, toute balise <a> déjà générée (liens markdown ou autolink) porte un
+# attribut target="_blank" dont l'underscore est précédé d'un \" (non-mot) : la
+# frontière de mot seule ne suffit donc pas à l'exclure (ex. 2 liens dans le même
+# paragraphe) — exclure aussi ", < et > du contenu empêche la regex de franchir une
+# balise générée.
+_RE_ITALIQUE_TIRET = re.compile(r"(?<!\w)_([^_\n\"<>]+?)_(?!\w)")
 _RE_LIEN = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _RE_LIEN_HTML = re.compile(r"<a\b[^>]*>.*?</a>", re.IGNORECASE | re.DOTALL)
 _RE_URL_BRUTE = re.compile(r"https?://\S+", re.IGNORECASE)
