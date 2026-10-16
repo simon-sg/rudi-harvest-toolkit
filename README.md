@@ -193,6 +193,38 @@ ressources (le nœud ferait déjà le travail). Ne pas supposer ceci acquis sans
 dédié — même type de piège que la création d'organisation (PUT vs POST), où la lecture de
 code seule avait mené à une fausse piste.
 
+### Suppression d'un média (fichier storage) — impossible via l'API standard
+
+Trouvé en conditions réelles le 2026-10-16 (démo nœud RM) : retirer un média
+d'`available_formats`, ou supprimer le dataset entier via `supprimer_dataset()`, **ne
+libère jamais l'espace storage**. Vérifié dans le code source `rudi-catalog` :
+`genericController.js::deleteSingleObject` ne supprime que l'entrée Mongo + notifie le
+portail, aucun appel vers le service storage.
+
+`rudi-storage` a bien une vraie route de suppression (`POST /delete/:uuid`, exécute un
+`rmSync()` réel sur le fichier) — mais elle exige une permission `-wx` que seul un rôle
+`admin`/`delegate` côté **storage** possède. Un compte producteur (celui que ce toolkit
+utilise toujours) n'a que `-w-` → `401 "Access not granted: execution access not set for
+the user"`. **Un rôle admin côté manager ne suffit pas non plus** (testé) : les comptes
+autorisés côté storage (`admin`, `rudimanager`, `rudiprod`, `rudiadmin`) sont des comptes
+système codés en dur dans la config propre de `rudi-storage`, déconnectés du système de
+rôles du manager — le JWT storage dérivé via `manager/api/storage/jwt` attribue toujours un
+rôle `producer`, quel que soit le rôle manager réel de l'utilisateur. **Capacité
+définitivement hors de portée de ce toolkit, sur n'importe quel nœud** — pas une fonction à
+ajouter, l'API ne le permet pas pour un compte producteur.
+
+**Seule protection fiable pour qui teste des tailles/volumes de médias : le nom de fichier
+fixe.** Le `media_id` est dérivé de façon déterministe du `media_name` (`_media_id_v4()`) —
+réuploader sous le **même nom** écrase le fichier au même chemin disque (storage écrit avec
+`flag: 'w'`), sans jamais dupliquer. Changer de nom entre deux essais sur le même usage crée
+en revanche un **orphelin permanent et invisible** (plus de référence catalogue, fichier
+toujours présent, espace toujours consommé).
+
+**Rattrapage possible si un orphelin existe déjà** : le neutraliser en ré-uploadant un
+fichier vide/minuscule sous le **même `media_id` connu**, directement via
+`writer.post_local_file_and_media_info(file_local_path=..., media_id=media_id_connu)` —
+storage ne vérifie jamais qu'un `media_id` est encore référencé par une fiche catalogue.
+
 ### Renvoi après validation d'organisation
 
 Une organisation créée via le circuit officiel passe par une tâche BPMN de validation
