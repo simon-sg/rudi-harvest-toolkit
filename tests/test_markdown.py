@@ -105,6 +105,48 @@ class TestMarkdownVersHtml(unittest.TestCase):
         self.assertIn("<strong>Descriptif du contenu des fichiers", html)
         self.assertIn('<a href="http://prev.openstreetmap.fr/36680-communes"', html)
 
+    def test_url_brute_devient_cliquable(self):
+        # Style data.gouv.fr courant : l'URL n'est pas en syntaxe [texte](url).
+        html = markdown_vers_html(
+            "Jeu de données source : https://www.data.gouv.fr/datasets/abc123"
+        )
+        self.assertEqual(
+            html,
+            '<p>Jeu de données source : <a href="https://www.data.gouv.fr/datasets/abc123" '
+            'target="_blank" rel="noopener noreferrer">'
+            "https://www.data.gouv.fr/datasets/abc123</a></p>",
+        )
+
+    def test_url_brute_ponctuation_finale_de_phrase_exclue_du_lien(self):
+        html = markdown_vers_html("Voir https://example.org/page. Suite du texte.")
+        self.assertIn('<a href="https://example.org/page"', html)
+        self.assertIn("</a>. Suite du texte.", html)
+
+    def test_url_brute_schema_non_http_jamais_transformee(self):
+        html = markdown_vers_html("Ne pas suivre ftp://exemple.fr/fichier ici.")
+        self.assertNotIn("<a ", html)
+        self.assertIn("ftp://exemple.fr/fichier", html)
+
+    def test_deux_liens_dans_le_meme_paragraphe_ne_se_corrompent_pas_mutuellement(self):
+        # Chaque <a> généré porte target="_blank" (un seul underscore) : la regex
+        # d'italique _..._ ne doit jamais s'appairer à travers deux balises <a>.
+        html = markdown_vers_html(
+            "Voir [ce site](https://example.com) ou directement https://example.org/page."
+        )
+        self.assertEqual(html.count("<a "), 2)
+        self.assertEqual(html.count("<em>"), 0)
+        self.assertIn('<a href="https://example.com" target="_blank"', html)
+        self.assertIn('<a href="https://example.org/page" target="_blank"', html)
+
+    def test_italique_tiret_legitime_toujours_reconnu(self):
+        html = markdown_vers_html("Un _vrai_ italique.")
+        self.assertEqual(html, "<p>Un <em>vrai</em> italique.</p>")
+
+    def test_url_dans_texte_deja_lien_markdown_non_doublee(self):
+        # Le label d'un lien [url](url) ne doit pas être re-transformé par l'autolink.
+        html = markdown_vers_html("[https://example.com](https://example.com)")
+        self.assertEqual(html.count("<a "), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
