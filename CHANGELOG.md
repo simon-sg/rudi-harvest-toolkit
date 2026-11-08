@@ -1,5 +1,20 @@
 # Changelog
 
+## Non publié — `supprimer_dataset_portail()` documentée comme redondante
+
+Suite du bug ci-dessous : une fois l'URL corrigée, le `401` est resté — pas un
+problème d'URL mais un vrai défaut d'autorisation, `supprimer_dataset_portail()`
+nécessitant un compte ROBOT enregistré côté ACL OAuth2 du portail, que
+`rudi-commune-starterkit` n'a jamais eu besoin d'avoir. Confirmé par le code source
+du nœud (`rudi-catalog/genericController.js::deleteSingleObject`) que
+`supprimer_dataset()` (suppression nœud seule) déclenche déjà ce relais
+automatiquement, avec l'identité propre du nœud — même principe que le relais de
+`demander_creation_organisation()`/`demander_detachement_producteur()`.
+`supprimer_dataset_portail()` conservée (d'autres appelants l'utilisent encore,
+ex. `moissonneuse-batteuse`) mais sa docstring documente maintenant cette
+redondance ; `rudi-commune-starterkit` ne l'appelle plus (voir son propre
+changelog/historique).
+
 ## Non publié — fix `_token_portail()` (bug réel en conditions de production)
 
 `_token_portail()` ne normalisait pas `url_portail` avant de construire l'URL
@@ -10,9 +25,10 @@ profil `rudi-commune-starterkit` saisi via l'assistant interactif) donnait
 un `--vider-commune` réel (2026-11-08) où les 13 suppressions nœud ont réussi mais
 chaque suppression portail a échoué sur ce 401 — aucune donnée perdue (le contrat
 best-effort existant a correctement marqué ces JDD en échec plutôt que de les retirer
-de l'état local, voir `test_portail_echec_bloque_meme_si_noeud_ok`), mais bloquait tout
-usage réel de `--vider-commune`/`--supprimer-organisation` avec un `url_portail` saisi
-avec un slash final.
+de l'état local), mais bloquait tout usage réel de
+`--vider-commune`/`--supprimer-organisation` avec un `url_portail` saisi avec un slash
+final. Voir l'entrée suivante : la cause plus profonde (401 persistant même l'URL
+corrigée) a mené à retirer l'appel portail séparé plutôt qu'à le corriger davantage.
 
 ## Non publié — garde-fous organisation + idempotence suppression (rudi-commune-starterkit v2)
 
