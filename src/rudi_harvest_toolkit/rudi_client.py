@@ -354,7 +354,7 @@ def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
     notamment, si ce compte n'est pas enregistré côté ACL comme client OAuth2 — vérifier
     avec l'équipe qui a fourni les identifiants dans ce cas)."""
     r = session.post(
-        f"{url_portail}/oauth2/token",
+        f"{url_portail.rstrip('/')}/oauth2/token",
         auth=(usr, pwd),
         data={"grant_type": "client_credentials", "username": usr, "password": pwd},
         timeout=30,

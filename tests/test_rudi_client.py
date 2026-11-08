@@ -9,6 +9,7 @@ from rudi_harvest_toolkit.rudi_client import (
     _api_version,
     _dedoublonner_medias_file,
     _media_file_deja_complet,
+    _token_portail,
     charger_conf_rudi,
     demander_archivage_organisation,
     demander_creation_organisation,
@@ -82,6 +83,42 @@ class TestEmailParDefaut(unittest.TestCase):
 
     def test_unique_par_nom(self):
         self.assertNotEqual(email_par_defaut("Insee"), email_par_defaut("OEB"))
+
+
+class TestTokenPortail(unittest.TestCase):
+    """Bug réel (2026-11-08, nœud source) : un url_portail enregistré avec un slash
+    final (ex. profil interactif) donnait http://portail//oauth2/token (double slash,
+    401 côté portail) — seul ce point d'entrée ne normalisait pas, contrairement à tous
+    les autres appels portail du fichier."""
+
+    def test_url_portail_avec_slash_final_normalisee(self):
+        reponse = mock.Mock(status_code=200)
+        reponse.json.return_value = {"access_token": "tok"}
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = reponse
+            token = _token_portail("http://portail/", "u", "p")
+        self.assertEqual(token, "tok")
+        sess.post.assert_called_once_with(
+            "http://portail/oauth2/token",
+            auth=("u", "p"),
+            data={"grant_type": "client_credentials", "username": "u", "password": "p"},
+            timeout=30,
+        )
+
+    def test_url_portail_sans_slash_final_inchangee(self):
+        reponse = mock.Mock(status_code=200)
+        reponse.json.return_value = {"access_token": "tok"}
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = reponse
+            _token_portail("http://portail", "u", "p")
+        sess.post.assert_called_once_with(
+            "http://portail/oauth2/token",
+            auth=("u", "p"),
+            data={"grant_type": "client_credentials", "username": "u", "password": "p"},
+            timeout=30,
+        )
 
 
 class TestListerOrganisations(unittest.TestCase):

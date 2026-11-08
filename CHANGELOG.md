@@ -1,5 +1,19 @@
 # Changelog
 
+## Non publié — fix `_token_portail()` (bug réel en conditions de production)
+
+`_token_portail()` ne normalisait pas `url_portail` avant de construire l'URL
+`oauth2/token`, contrairement à tous les autres appels portail du fichier
+(`.rstrip('/')`) — un `url_portail` enregistré avec un slash final (cas réel :
+profil `rudi-commune-starterkit` saisi via l'assistant interactif) donnait
+`http://portail//oauth2/token`, rejeté par le portail (`401 Unauthorized`). Repéré via
+un `--vider-commune` réel (2026-11-08) où les 13 suppressions nœud ont réussi mais
+chaque suppression portail a échoué sur ce 401 — aucune donnée perdue (le contrat
+best-effort existant a correctement marqué ces JDD en échec plutôt que de les retirer
+de l'état local, voir `test_portail_echec_bloque_meme_si_noeud_ok`), mais bloquait tout
+usage réel de `--vider-commune`/`--supprimer-organisation` avec un `url_portail` saisi
+avec un slash final.
+
 ## Non publié — garde-fous organisation + idempotence suppression (rudi-commune-starterkit v2)
 
 Ajouts dans `rudi_client.py`, motivés par le plan v2 de `rudi-commune-starterkit`
