@@ -6,20 +6,26 @@ import unittest
 from unittest import mock
 
 from rudi_harvest_toolkit.rudi_client import (
+    _api_version,
     _dedoublonner_medias_file,
     _media_file_deja_complet,
     charger_conf_rudi,
+    demander_archivage_organisation,
     demander_creation_organisation,
     demander_detachement_producteur,
     demander_mise_a_jour_organisation,
     demander_suppression_organisation,
     email_par_defaut,
+    global_id_pour_local_id,
     lister_organisations,
     marquer_organisations_traitees,
+    organisation_par_nom,
     organisations_nouvellement_validees,
     renvoyer_ressources_connues,
     ressources_pour_organisations,
+    supprimer_dataset,
     supprimer_dataset_portail,
+    supprimer_organisation,
     televerser_piece_jointe,
 )
 
@@ -35,6 +41,33 @@ class TestChargerConfRudi(unittest.TestCase):
             with open(chemin, "w", encoding="utf-8") as f:
                 json.dump(conf, f)
             self.assertEqual(charger_conf_rudi(chemin), conf)
+
+
+class TestApiVersion(unittest.TestCase):
+    def test_version_valide_retournee(self):
+        conf = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
+        reponse = mock.Mock(text="1.4.0")
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(_api_version(conf), "1.4.0")
+
+    def test_reponse_404_retombe_sur_defaut(self):
+        # Route répondant mais sans /version (corps JSON d'erreur) : ne doit jamais être
+        # pris pour une version valide — sinon ce texte atterrit dans metadata_info.api_version
+        # et le nœud rejette la publication avec "Incorrect RUDI metadata version".
+        conf = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
+        reponse = mock.Mock(text='{"message":"Route \'GET /version\' not found"}')
+        reponse.raise_for_status = mock.Mock(side_effect=Exception("404"))
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(_api_version(conf), "1.4.0")
+
+    def test_connexion_impossible_retombe_sur_defaut(self):
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = ConnectionError("refusée")
+            self.assertEqual(_api_version(conf), "1.4.0")
 
 
 class TestEmailParDefaut(unittest.TestCase):
@@ -73,6 +106,62 @@ class TestListerOrganisations(unittest.TestCase):
             "http://n:3030/catalog/v1/organizations",
             params={"organization_status": "VALIDATED"}, timeout=30,
         )
+
+
+class TestOrganisationParNom(unittest.TestCase):
+    _CONF = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
+
+    def test_trouvee_par_nom_normalise(self):
+        orgs = [
+            {"organization_id": "org-1", "organization_name": "Commune de Gévezé",
+             "organization_status": "DRAFT", "linked_producer_status": None},
+        ]
+        reponse = mock.Mock()
+        reponse.json.return_value = orgs
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            # Casse et accents différents : doit matcher quand même.
+            resultat = organisation_par_nom(self._CONF, "commune de geveze")
+        self.assertEqual(resultat, orgs[0])
+        sess.get.assert_called_once_with(
+            "http://n:3030/catalog/v1/organizations", timeout=30,
+        )
+
+    def test_absente_retourne_none(self):
+        reponse = mock.Mock()
+        reponse.json.return_value = [{"organization_name": "Autre organisation"}]
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertIsNone(organisation_par_nom(self._CONF, "Commune de Gévezé"))
+
+    def test_erreur_reseau_propagee(self):
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = ConnectionError("refusée")
+            with self.assertRaises(ConnectionError):
+                organisation_par_nom(self._CONF, "Commune de Gévezé")
+
+    def test_erreur_http_propagee(self):
+        reponse = mock.Mock()
+        reponse.raise_for_status = mock.Mock(side_effect=Exception("500"))
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            with self.assertRaises(Exception):
+                organisation_par_nom(self._CONF, "Commune de Gévezé")
+
+    def test_statut_absent_du_champ_nest_pas_une_erreur(self):
+        # Organisation trouvée mais sans organization_status (champ non garanti selon
+        # l'historique de l'organisation) : organisation_par_nom() ne filtre jamais sur
+        # ce champ, à l'appelant de décider quoi faire d'un statut absent.
+        orgs = [{"organization_id": "org-1", "organization_name": "Commune de Gévezé"}]
+        reponse = mock.Mock()
+        reponse.json.return_value = orgs
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            resultat = organisation_par_nom(self._CONF, "Commune de Gévezé")
+        self.assertNotIn("organization_status", resultat)
 
 
 class TestOrganisationsNouvellementValidees(unittest.TestCase):
@@ -341,7 +430,6 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
             resultat = demander_creation_organisation(conf, self.ORG)
         self.assertEqual(resultat, "uuid-noeud")
-
 
 class TestDemanderMiseAJourOrganisation(unittest.TestCase):
     ORG = {"organization_id": "uuid-portail", "organization_name": "MyDataBall",
@@ -625,6 +713,81 @@ class TestTeleverserPieceJointe(unittest.TestCase):
             self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
 
 
+class TestDemanderArchivageOrganisation(unittest.TestCase):
+    def _session(self, sess, get_statut=200, get_json=None, create_statut=200,
+                 create_corps=None, start_statut=200):
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        sess.post.side_effect = [rep_token, mock.Mock(
+            status_code=create_statut, text="erreur",
+            json=mock.Mock(return_value=create_corps if create_corps is not None else {}))]
+        rep_get = mock.Mock(status_code=get_statut)
+        rep_get.json.return_value = get_json if get_json is not None else {}
+        sess.get.return_value = rep_get
+        sess.put.return_value = mock.Mock(status_code=start_statut, text="erreur")
+        return sess
+
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+        sess.get.assert_not_called()
+        sess.post.assert_not_called()
+
+    def test_organisation_inconnue_du_portail_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_statut=404)
+            self.assertFalse(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+        sess.post.assert_called_once()  # seulement le token, jamais le brouillon
+
+    def test_succes_suit_le_flux_draft_archive(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {"uuid": "uuid-1"}})
+            self.assertTrue(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+        self.assertEqual(sess.get.call_args[0][0],
+                         "http://portail.test/strukture/v1/organizations/request/uuid-1")
+        args_brouillon, kwargs_brouillon = sess.post.call_args_list[1]
+        self.assertEqual(args_brouillon[0], "http://portail.test/strukture/v1/organizations/tasks")
+        corps = kwargs_brouillon["json"]
+        self.assertEqual(corps["uuid"], "uuid-1")
+        self.assertEqual(corps["form"]["type"], "DRAFT_ARCHIVE")
+        args_start, kwargs_start = sess.put.call_args
+        self.assertEqual(args_start[0], "http://portail.test/strukture/v1/organizations/tasks/start")
+        self.assertEqual(kwargs_start["json"]["asset"]["form"]["type"], "DRAFT_ARCHIVE")
+
+    def test_champs_du_formulaire(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_corps={"asset": {}})
+            demander_archivage_organisation(conf, "uuid-1", "Doublon", message="msg test")
+        form = sess.post.call_args_list[1][1]["json"]["form"]
+        section = form["sections"][0]
+        self.assertEqual(section["name"], "organization-process-draft/archive-organization")
+        champs = {f["definition"]["name"]: f["values"] for f in section["fields"]}
+        self.assertEqual(champs["organizationArchiveMode"], ["DISENGAGED"])
+        self.assertEqual(champs["messageToModerator"], ["msg test"])
+
+    def test_creation_refusee_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, create_statut=400)
+            self.assertFalse(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+        sess.put.assert_not_called()
+
+    def test_auth_portail_echoue_retourne_false(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertFalse(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+
+
 class TestDemanderDetachementProducteur(unittest.TestCase):
     """Depuis le 2026-10-15 : détachement via le NŒUD (GET manager/api/catalog/portal/
     organizations/{id}/detach — **sans** segment `admin/`, voir test_succes_... ci-dessous ;
@@ -774,6 +937,61 @@ class TestSupprimerDatasetPortail(unittest.TestCase):
             sess.post.return_value = rep_token
             sess.delete.return_value = rep_del
             self.assertFalse(supprimer_dataset_portail(conf, "gid-1"))
+
+
+class TestGlobalIdPourLocalId(unittest.TestCase):
+    def test_trouve(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.filter_metadata_list.return_value = [{"global_id": "gid-1"}]
+            self.assertEqual(global_id_pour_local_id(conf, "lid-1"), "gid-1")
+        creer.return_value.filter_metadata_list.assert_called_once_with({"local_id": "lid-1"})
+
+    def test_absent_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.filter_metadata_list.return_value = []
+            self.assertIsNone(global_id_pour_local_id(conf, "lid-1"))
+
+
+class TestSupprimerDataset(unittest.TestCase):
+    def test_succes(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            self.assertTrue(supprimer_dataset(conf, "gid-1"))
+        creer.return_value.connector.del_catalog.assert_called_once_with("resources/gid-1")
+
+    def test_404_traite_comme_succes(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.del_catalog.side_effect = Exception("404 Not Found")
+            self.assertTrue(supprimer_dataset(conf, "gid-1"))
+
+    def test_autre_erreur_echoue(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.del_catalog.side_effect = Exception("500 panne")
+            self.assertFalse(supprimer_dataset(conf, "gid-1"))
+
+
+class TestSupprimerOrganisation(unittest.TestCase):
+    def test_succes(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            self.assertTrue(supprimer_organisation(conf, "org-1"))
+        creer.return_value.connector.delete_org_with_id.assert_called_once_with("org-1")
+
+    def test_404_traite_comme_succes(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.delete_org_with_id.side_effect = Exception("404")
+            self.assertTrue(supprimer_organisation(conf, "org-1"))
+
+    def test_autre_erreur_echoue(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.delete_org_with_id.side_effect = Exception("409 conflit")
+            self.assertFalse(supprimer_organisation(conf, "org-1"))
 
 
 if __name__ == "__main__":

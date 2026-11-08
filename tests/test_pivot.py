@@ -9,8 +9,10 @@ from rudi_harvest_toolkit.pivot import (
     LICENCE_ETALAB,
     construire_licence,
     construire_rudi_metadata,
+    media_dict,
     media_filtre,
     media_metadata_page,
+    media_pdf,
     media_source,
     parser_date_http,
 )
@@ -32,6 +34,17 @@ class TestMediaHelpers(unittest.TestCase):
         self.assertEqual(m["media_type"], "SERVICE")
         self.assertEqual(m["media_name"], "source-data")
         self.assertEqual(m["connector"]["url"], "https://u")
+
+    def test_media_captions_generees_sans_em_dash(self):
+        # Pas de "—" dans le contenu publié (plan starterkit v2, § 5) : un trait d'union
+        # simple à la place, construit via un vrai appel, pas un grep sur le fichier.
+        captions = [
+            media_filtre("insee:x", "f.csv", "Rennes Métropole")["media_caption"],
+            media_dict("insee:x", "dico.csv")["media_caption"],
+            media_pdf("insee:x", "doc.pdf", "Titre")["media_caption"],
+        ]
+        for caption in captions:
+            self.assertNotIn("—", caption)
 
 
 class TestConstruireRudiMetadata(unittest.TestCase):

@@ -40,7 +40,7 @@ def media_filtre(prefixe_id: str, nom_fichier: str, zone: str,
         "media_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{prefixe_id}/filtered/{nom_fichier}")),
         "media_type": "FILE",
         "media_name": nom_fichier,
-        "media_caption": caption or f"{nom_fichier} — données filtrées sur {zone} (CSV)",
+        "media_caption": caption or f"{nom_fichier} - données filtrées sur {zone} (CSV)",
         "connector": {
             "url": "À_RENSEIGNER_APRES_DEPOT_SUR_NOEUD",
             "interface_contract": "dwnl",
@@ -82,7 +82,7 @@ def media_dict(prefixe_id: str, nom_fichier: str) -> dict:
         "media_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{prefixe_id}/dict/{nom_fichier}")),
         "media_type": "FILE",
         "media_name": nom_fichier,
-        "media_caption": f"Dictionnaire des variables — {nom_fichier} (CSV)",
+        "media_caption": f"Dictionnaire des variables - {nom_fichier} (CSV)",
         "connector": {
             "url": "À_RENSEIGNER_APRES_DEPOT_SUR_NOEUD",
             "interface_contract": "dwnl",
@@ -96,7 +96,7 @@ def media_pdf(prefixe_id: str, nom_fichier: str, titre: str) -> dict:
         "media_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{prefixe_id}/pdf/{nom_fichier}")),
         "media_type": "FILE",
         "media_name": nom_fichier,
-        "media_caption": f"Documentation — {titre} (PDF)",
+        "media_caption": f"Documentation - {titre} (PDF)",
         "connector": {
             "url": "À_RENSEIGNER_APRES_DEPOT_SUR_NOEUD",
             "interface_contract": "dwnl",

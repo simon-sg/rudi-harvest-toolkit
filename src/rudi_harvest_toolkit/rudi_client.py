@@ -22,6 +22,7 @@ from rudi_node_write.rudi_types.rudi_media import RudiMediaFile
 from rudi_node_write.rudi_types.rudi_meta import RudiMetadata
 
 from .http import session
+from .tabular import normaliser_nom_colonne
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,9 @@ def url_catalog(conf: dict) -> str:
 def _api_version(conf: dict) -> str:
     """Récupère la version de l'API catalog du nœud RUDI."""
     try:
-        return session.get(f"{url_catalog(conf)}/version", timeout=5).text.strip()
+        reponse = session.get(f"{url_catalog(conf)}/version", timeout=5)
+        reponse.raise_for_status()
+        return reponse.text.strip()
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API ({e}), valeur par défaut 1.4.0 utilisée.")
         return "1.4.0"
@@ -158,6 +161,18 @@ def toutes_metadonnees_rudi(conf: dict) -> list[dict]:
     return writer.filter_metadata_list({})
 
 
+def global_id_pour_local_id(conf: dict, local_id: str) -> str | None:
+    """Résout le ``global_id`` d'un dataset déjà publié à partir de son ``local_id``
+    (clé stable utilisée par les appelants qui, comme rudi-commune-starterkit, ne
+    suivent localement que ``local_id``/hash de contenu, jamais ``global_id``). Même
+    requête que celle déjà faite dans :func:`publier_dataset` pour retrouver un dataset
+    existant. Retourne ``None`` si le nœud n'en a plus trace (déjà supprimé, ou jamais
+    publié malgré une entrée locale résiduelle côté appelant)."""
+    writer = _creer_writer(conf)
+    existants = writer.filter_metadata_list({"local_id": local_id})
+    return existants[0]["global_id"] if existants else None
+
+
 def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
     """Liste les organisations déclarées sur le nœud RUDI local.
 
@@ -183,6 +198,32 @@ def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
                           params={"organization_status": statut}, timeout=30)
     reponse.raise_for_status()
     return reponse.json()
+
+
+def organisation_par_nom(conf: dict, organization_name: str) -> dict | None:
+    """Cherche une organisation par nom normalisé (casse/accents/espaces ignorés),
+    toujours via une requête HTTP brute (``GET {url_catalog}/v1/organizations``, sans
+    filtre serveur) — jamais via ``_creer_writer(conf).organization_list``, qui ne
+    garantit pas la présence de ``organization_status``/``linked_producer_status`` dans
+    chaque entrée (ce sont ces deux champs qui motivent cette fonction : savoir si une
+    organisation est validée et rattachée à un portail, pas seulement si elle existe).
+
+    Volontairement distincte de :func:`lister_organisations` : ne touche pas à son
+    contrat existant (``resolution_noeud.py``, moissonneur-ods en dépendent déjà).
+
+    Retourne le dict complet de l'organisation si trouvée (``organization_id``,
+    ``organization_status``, ``linked_producer_status``, ...), ``None`` si aucune
+    organisation de ce nom n'existe sur le nœud. Toute erreur réseau/HTTP est propagée
+    (jamais avalée) — contrairement à :func:`demander_creation_organisation`, qui est
+    best-effort par conception, cette fonction doit permettre à l'appelant de distinguer
+    « organisation absente » d'« impossible de vérifier »."""
+    reponse = session.get(f"{url_catalog(conf)}/v1/organizations", timeout=30)
+    reponse.raise_for_status()
+    cible = normaliser_nom_colonne(organization_name)
+    for organisation in reponse.json():
+        if normaliser_nom_colonne(organisation.get("organization_name") or "") == cible:
+            return organisation
+    return None
 
 
 def organisations_nouvellement_validees(conf: dict, chemin_etat: str) -> list[str]:
@@ -360,6 +401,27 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     Toujours **best-effort** : ne lève jamais, journalise et retourne ``None`` en cas
     d'échec (nœud injoignable, organisation déjà existante avec ce nom, etc.) — ne
     bloque jamais la publication du dataset lui-même.
+
+    **Pas de scénario « zombie » possible (confirmé par le code source du nœud ET par
+    test en conditions réelles le 2026-11-08, portail coupé puis relancé)** : contrairement
+    à ce qu'une relecture antérieure de ce même code avait conclu (« relayée au portail
+    s'il est connecté », laissant penser à un relais fire-and-forget), le relais est en
+    réalité **synchrone et bloquant** — `rudi-catalog/src/controllers/genericController.js`,
+    fonction `newRudiObject` :
+
+    .. code-block:: js
+
+        const organizationId = await createPortalOrganization(dbObject)  // AVANT le save
+        if (organizationId) { dbObject['organization_status'] = OrganizationStatus.DRAFT }
+        await dbObject.save()  // jamais atteint si l'appel ci-dessus a levé une exception
+
+    `createPortalOrganization()` (`portalController.js`) fait un `httpPost` direct vers le
+    portail dont toute erreur remonte telle quelle, interrompant `newRudiObject()` avant le
+    `save()`. Autrement dit : **la création locale sur le nœud ne réussit QUE SI le relais
+    portail a lui-même réussi** — un portail injoignable fait échouer tout le `POST
+    /organizations` (confirmé : `503 "rudi-catalog semble injoignable"`, rien créé), il n'y
+    a donc jamais d'organisation qui existe sur le nœud sans avoir été relayée. Pas besoin
+    de vérification/rollback après coup pour ce cas.
     """
     try:
         writer = _creer_writer(conf)
@@ -382,7 +444,8 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
             print(f"  [RUDI] AVERTISSEMENT : création d'organisation sur le nœud sans organization_id en retour : {resultat}")
             return None
         print(f"  [RUDI] organisation « {corps['organization_name']} » créée sur le nœud "
-              f"(uuid={org_id}, statut={resultat.get('organization_status')}) — relayée au portail s'il est connecté.")
+              f"(uuid={org_id}, statut={resultat.get('organization_status')}) — relais portail "
+              f"synchrone déjà effectué (voir docstring).")
         return org_id
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : échec de la création d'organisation sur le nœud : {e}")
@@ -666,6 +729,113 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict,
         return True
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : échec de la mise à jour portail de l'organisation : {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Archivage d'une organisation côté portail : workflow BPMN DRAFT_ARCHIVE
+# ---------------------------------------------------------------------------
+# Message déposé à l'attention du modérateur (champ requis de la section
+# archive-organization).
+_MESSAGE_MODERATEUR_ARCHIVAGE = "Archivage d'une organisation en double, créée par erreur."
+
+
+def _formulaire_archivage(message: str) -> dict:
+    """Construit la valeur du champ ``form`` (type ``DRAFT_ARCHIVE``) d'une demande
+    d'archivage — section unique ``archive-organization``, 2 champs requis :
+    ``organizationArchiveMode`` (``ARCHIVED``|``DISENGAGED`` — ``DISENGAGED`` retire
+    aussi les réutilisations du grand public, utilisé ici car ces organisations n'en
+    ont jamais eu) et ``messageToModerator`` (texte libre)."""
+    return {
+        "type": "DRAFT_ARCHIVE",
+        "sections": [
+            {
+                "name": "organization-process-draft/archive-organization",
+                "fields": [
+                    _champ("organizationArchiveMode", "DISENGAGED"),
+                    _champ("messageToModerator", message),
+                ],
+            },
+        ],
+    }
+
+
+def demander_archivage_organisation(conf: dict, organization_id: str, organization_name: str,
+                                    *, message: str = _MESSAGE_MODERATEUR_ARCHIVAGE) -> bool | None:
+    """Demande l'archivage d'une organisation **auprès du portail** (workflow BPMN
+    ``DRAFT_ARCHIVE`` — même rôle/identité PROVIDER, même enchaînement ``POST
+    /organizations/tasks`` → réinjection de ``form`` dans la réponse → ``PUT
+    /organizations/tasks/start`` que ``demander_mise_a_jour_organisation()``).
+
+    Utile pour une organisation **orpheline du nœud** (supprimée côté manager, mais dont
+    le portail garde encore la trace d'un relais de création antérieur) : à la différence
+    de ``demander_suppression_organisation()``/``demander_detachement_producteur()``, qui
+    passent par le nœud ou exigent que l'organisation y existe encore, cet appel n'a besoin
+    que de l'identité PROVIDER connue du portail — jamais du nœud.
+
+    Ne supprime pas l'organisation à proprement parler (pas de route de suppression franche
+    trouvée côté portail pour ce cas) : une fois validée par un modérateur dans l'UI
+    Strukture (même mécanisme que ``valider_organisations_portail.py`` — ``organization-
+    process`` générique, aucun traitement spécial par type de brouillon), elle passe en
+    ``functional_status: ARCHIVED`` et disparaît du catalogue public et des listes de
+    sélection.
+
+    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Retourne ``None`` si ``url_portail`` est absent, ``False`` en cas d'échec (auth,
+    organisation inconnue du portail, refus, réseau ; journalisé), ``True`` si la demande
+    a été déposée et démarrée (validation modérateur encore nécessaire).
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    base = url_portail.rstrip("/")
+
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande d'archivage envoyée ({e})")
+        return False
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    try:
+        r = session.get(f"{base}/strukture/v1/organizations/request/{organization_id}",
+                        headers=headers, timeout=30)
+        if r.status_code != 200:
+            print(f"  [RUDI] AVERTISSEMENT : organisation « {organization_name} » inconnue du portail "
+                  f"({r.status_code}), pas de demande d'archivage envoyée")
+            return False
+        description = r.json().get("organization_summary") or organization_name
+
+        form = _formulaire_archivage(message)
+        brouillon = {
+            "uuid": organization_id,
+            "object_type": "Organization",
+            "name": organization_name,
+            "description": description,
+            "form": form,
+        }
+        r = session.post(f"{base}/strukture/v1/organizations/tasks", json=brouillon,
+                         headers=headers, timeout=30)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : création du brouillon d'archivage refusée "
+                  f"par le portail ({r.status_code}) : {r.text[:200]}")
+            return False
+        tache = r.json()
+        tache.setdefault("asset", {})["form"] = form
+
+        r = session.put(f"{base}/strukture/v1/organizations/tasks/start", json=tache,
+                        headers=headers, timeout=30)
+        if r.status_code >= 400:
+            print(f"  [RUDI] AVERTISSEMENT : démarrage de la demande d'archivage refusé "
+                  f"par le portail ({r.status_code}) : {r.text[:200]}")
+            return False
+        print(f"  [RUDI] demande d'archivage portail déposée pour l'organisation « {organization_name} » "
+              f"(en attente de validation modérateur)")
+        return True
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : échec de la demande d'archivage portail : {e}")
         return False
 
 
@@ -1017,7 +1187,9 @@ def publier_dataset(
 def supprimer_organisation(conf: dict, org_id: str) -> bool:
     """
     Supprime une organisation du nœud RUDI par son organization_id.
-    Retourne True si la suppression a réussi.
+    Retourne True si la suppression a réussi — y compris un 404 (déjà absente,
+    idempotence nécessaire à une suppression de commune ré-exécutable après
+    interruption, même principe que le 409 de demander_detachement_producteur()).
     """
     writer = _creer_writer(conf)
     try:
@@ -1025,6 +1197,9 @@ def supprimer_organisation(conf: dict, org_id: str) -> bool:
         print(f"  [RUDI] organisation {org_id[:12]}… supprimée du nœud.")
         return True
     except Exception as e:
+        if "404" in str(e):
+            print(f"  [RUDI] organisation {org_id[:12]}… déjà absente du nœud (traité comme succès).")
+            return True
         print(f"  [RUDI] Erreur suppression organisation {org_id[:12]}… : {e}")
         return False
 
@@ -1047,7 +1222,9 @@ def supprimer_contact(conf: dict, contact_id: str) -> bool:
 def supprimer_dataset(conf: dict, global_id: str) -> bool:
     """
     Supprime un dataset du nœud RUDI par son global_id.
-    Retourne True si la suppression a réussi.
+    Retourne True si la suppression a réussi — y compris un 404 (déjà absent, même
+    idempotence que supprimer_organisation(), nécessaire à une suppression de commune
+    ré-exécutable après interruption).
     """
     writer = _creer_writer(conf)
     try:
@@ -1055,6 +1232,9 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
         print(f"  [RUDI] dataset {global_id[:12]}… supprimé du nœud.")
         return True
     except Exception as e:
+        if "404" in str(e):
+            print(f"  [RUDI] dataset {global_id[:12]}… déjà absent du nœud (traité comme succès).")
+            return True
         print(f"  [RUDI] Erreur suppression {global_id[:12]}… : {e}")
         return False
 
