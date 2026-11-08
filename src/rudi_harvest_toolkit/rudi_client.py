@@ -1242,13 +1242,35 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
 def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     """Supprime une ressource **côté portail** (Kalim) par son ``global_id``
     (``DELETE {url_portail}/kalim/v1/resources/{global_id}``, ``ResourcesController``
-    côté Kalim, même authentification ROBOT que la publication).
+    côté Kalim, authentification OAuth2 ROBOT directe au portail).
 
-    Porté depuis ``moissonneur-ods/portail_client.py::supprimer_ressources_portail()``
-    pour être partagé (voir le TODO « Suppression » du README) : ``supprimer_dataset()``
-    ne supprime que sur le **nœud**, jamais côté portail — si Kalim a déjà moissonné la
-    ressource, celle-ci reste résiduelle dans le catalogue du portail. Cette fonction
-    complète l'opération.
+    **Inutile dans le cas général, confirmé par le code source du nœud (2026-11-08)** :
+    ``supprimer_dataset()`` (``DELETE {objectType}/{id}`` sur le nœud) déclenche déjà
+    ce relais automatiquement et gratuitement — `rudi-catalog/src/controllers/
+    genericController.js::deleteSingleObject` :
+
+    .. code-block:: js
+
+        if (objectType === OBJ_METADATA && !rudiObj[API_COLLECTION_TAG]) {
+          deletePortalMetadata(rudiId)  // fire-and-forget, identité portail du nœud
+            .then(...).catch(...)
+        }
+
+    Exactement le même principe que le relais (bloquant, lui) de
+    :func:`demander_creation_organisation` et de :func:`demander_detachement_producteur`
+    (``catalog/portal/organizations/{id}/detach``, corrigé le 2026-10-15) : le **nœud**
+    relaie lui-même au portail avec sa propre identité, jamais celle de l'appelant.
+    ``supprimer_dataset()`` seul suffit donc à supprimer des deux côtés — ne pas appeler
+    cette fonction en plus pour un dataset normalement moissonné.
+
+    Elle reste ici portée depuis ``moissonneur-ods/portail_client.py::
+    supprimer_ressources_portail()`` pour compatibilité (d'autres appelants l'utilisent
+    encore) et pour le cas, non rencontré en pratique, où elle serait réellement utile :
+    un appel direct nécessite un compte ROBOT **enregistré côté ACL du portail comme
+    client OAuth2** (ex. un UUID dédié, voir la conf de moissonneuse-batteuse) — un
+    compte nœud ordinaire (ex. ``usr``/``pwd`` d'un utilisateur du manager) y est
+    toujours rejeté en ``401``, confirmé en conditions réelles : c'est ce ``401``, pas un
+    bug de cette fonction, qui a fait découvrir que le relais automatique existait déjà.
 
     **Asynchrone** comme la publication : la requête ne crée qu'une demande d'intégration
     de type DELETE, traitée ensuite par le planificateur Kalim — pas une suppression
