@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `televerser_piece_jointe()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin). |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `organisation_par_nom(conf, organization_name)` (recherche par nom normalisé, garantit `organization_status`/`linked_producer_status` dans le résultat), `global_id_pour_local_id(conf, local_id)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `televerser_piece_jointe()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin). |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 | `rudi_harvest_toolkit.tabular` | `iter_lignes_csv(source)`, `filtrer_csv(source, colonne, valeur)`, `lire_csv_filtre(...)` — lecteur CSV streaming (sniffing délimiteur/encodage, décompression gzip à la volée, résolution de colonne tolérante accents/casse) + filtre générique par valeur de colonne exacte. Généralise le moteur de parsing de `moissonneuse-batteuse/src/harvest_batch.py`, sans sa cascade Rennes Métropole à 8 niveaux. |
 | `rudi_harvest_toolkit.datagouv` | `get_dataset_metadata(id)`, `lister_ressources(id)`, `selectionner_ressource(..., index=/motif_nom=/la_plus_recente=, format=)` — client data.gouv.fr générique avec sélection explicite de ressource (au lieu du « premier match par format » de `moissonneuse-batteuse/src/connectors/datagouv.py`). |
@@ -58,14 +58,21 @@ pipelines, pas un cas particulier.
    dans la file de modération sans action de notre part). Un appel explicite à ce stade
    échoue (`400 "Organization is not in a valid state"`, l'organisation n'étant pas encore
    validée).
-4. **Identifiants nœud ≠ identifiants portail — mais seule `demander_suppression_organisation()`
-   (pas la création, pas le détachement) en a encore besoin.** Le login/mot de passe manager
-   du **nœud** (compte local) et les identifiants ROBOT du **portail** (compte ACL/OAuth2)
-   restent deux systèmes d'authentification distincts — `usr`/`pwd` pour le nœud,
-   `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si absents). Un `401
-   invalid_client` sur un appel portail direct (suppression — plus la mise à jour, abandonnée,
-   ni le détachement, qui passe par le nœud depuis le 2026-10-15) signale typiquement des
-   identifiants nœud fournis à la place d'identifiants ACL portail.
+4. **Identifiants nœud ≠ identifiants portail — et aucun appelant de ce toolkit n'a
+   jamais eu les seconds.** Le login/mot de passe manager du **nœud** (compte local) et
+   les identifiants ROBOT du **portail** (compte ACL/OAuth2, rôle applicatif) restent
+   deux systèmes d'authentification distincts — `usr`/`pwd` pour le nœud,
+   `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si absents, ce qui
+   échoue systématiquement : un compte nœud n'est jamais aussi un compte ACL portail).
+   Seule `demander_suppression_organisation()` (suppression de l'**organisation**
+   elle-même côté Strukture — pas la création, pas le détachement, pas la suppression
+   des **datasets**, voir plus bas) fait encore un appel portail direct de ce type, et
+   échoue donc en `401` pour tous les appelants réels connus de ce toolkit, confirmé 3
+   façons différentes (OAuth2 `client_credentials`, `grant_type=password`, login
+   classique) sur plusieurs nœuds. Ce n'est **pas un bug de route à corriger** : seul un
+   compte animateur personnel (accès humain à l'UI Strukture) peut faire cette
+   suppression précise — voir `rudi-commune-starterkit`, qui ne l'appelle plus du tout
+   et demande confirmation manuelle à la place.
 
 ### `demander_creation_organisation(conf, organization)`
 
@@ -147,11 +154,23 @@ de `demander_mise_a_jour_organisation()`. Le portail n'accepte que **jpeg/png, �
 
 `supprimer_organisation()` ne supprime que la copie **locale** de l'organisation sur le
 **nœud**. `demander_suppression_organisation()` la supprime aussi **côté portail**
-(`DELETE {url_portail}/strukture/v1/organizations/request/{uuid}`, même compte ROBOT que la
-création, rôle `PROVIDER`). Sans cet appel, l'organisation reste présente dans l'UI
-Strukture / le référentiel du portail après sa suppression côté nœud — c'est le pendant
-« portail » de la suppression d'organisation, comme `supprimer_dataset_portail()` l'est
-aux datasets.
+(`DELETE {url_portail}/strukture/v1/organizations/request/{uuid}`, rôle `PROVIDER`
+applicatif). Sans cet appel, l'organisation reste présente dans l'UI Strukture / le
+référentiel du portail après sa suppression côté nœud.
+
+**En pratique, inutilisable sans un compte ACL portail dédié que ce toolkit n'a jamais
+eu** (confirmé en conditions réelles le 2026-10-15 et de nouveau le 2026-11-08, `401`
+systématique quelle que soit la méthode d'auth essayée — voir règle 4 plus haut) —
+contrairement à `supprimer_dataset_portail()` (datasets, voir la section suivante), il
+n'existe **aucun relais nœud** équivalent pour cette opération précise : le nœud ne
+relaie que les actes `attach`/`detach`/`has_task` pour les organisations, jamais la
+suppression (vérifié dans `rudi-catalog/src/routes/routes.js`, aucune route `delete`
+pour `portal/organizations/:id`). `rudi-commune-starterkit` ne l'appelle donc plus du
+tout : une fois le producteur détaché, il demande à l'utilisateur de confirmer qu'il a
+lui-même supprimé l'organisation dans l'UI Strukture (son propre accès animateur) avant
+de nettoyer la copie locale du nœud. Fonction conservée ici pour compatibilité (d'autres
+appelants, ex. `moissonneuse-batteuse`) et pour le jour où de vrais identifiants ACL
+seraient disponibles.
 
 Contrairement à la création (tâche BPMN + validation modérateur), la suppression de
 l'organisation elle-même est appliquée **directement** (aucune validation côté Strukture).
@@ -179,24 +198,23 @@ pour cette opération.
 
 ### `supprimer_dataset(conf, global_id)` vs `supprimer_dataset_portail(conf, global_id)`
 
-`supprimer_dataset()` ne supprime que sur le **nœud**. Si Kalim a déjà moissonné la
-ressource, celle-ci reste résiduelle dans le catalogue du portail : la supprimer aussi
-côté portail nécessite `supprimer_dataset_portail()`
-(`DELETE {url_portail}/kalim/v1/resources/{global_id}`, authentification ROBOT, **DELETE
-asynchrone** traité par le planificateur Kalim — laisser quelques minutes avant de
-conclure à un blocage). Portée depuis `moissonneur-ods` pour être partagée, notamment par
-`moissonneuse-batteuse`. **Best-effort**, retourne ``True``/``False``/``None`` (``None`` =
-pas de `url_portail`, aucune requête).
+`supprimer_dataset()` ne supprime que sur le **nœud** — mais, **confirmé en conditions
+réelles le 2026-11-08** (pas seulement par lecture de code, contrairement à une version
+antérieure de cette section) : si Kalim a déjà moissonné la ressource, cette suppression
+nœud **déclenche déjà** sa suppression côté portail, automatiquement, avec l'identité
+propre du nœud (`genericController.js::deleteSingleObject` → `deletePortalMetadata()`,
+appelé dès que `objectType === 'resources'` et que la ressource n'a pas de
+`collection_tag` — notre cas général). Même principe que le relais de
+`demander_creation_organisation()`/`demander_detachement_producteur()`.
 
-⚠️ **À vérifier en conditions réelles, pas encore confirmé empiriquement** (lecture de code
-seulement, `genericController.js::deleteSingleObject`) : un `DELETE /resources/{id}` sur le
-**nœud** semble déjà appeler lui-même `deletePortalMetadata()` — donc relayer la suppression
-au portail avec l'identité du nœud, comme pour la création d'organisation — **mais
-uniquement si la ressource n'a pas de `collection_tag`** (notre cas : `moissonneuse-batteuse`
-n'en pose jamais). Si confirmé, `supprimer_dataset_portail()` deviendrait redondante pour nos
-ressources (le nœud ferait déjà le travail). Ne pas supposer ceci acquis sans un test réel
-dédié — même type de piège que la création d'organisation (PUT vs POST), où la lecture de
-code seule avait mené à une fausse piste.
+`supprimer_dataset_portail()` (`DELETE {url_portail}/kalim/v1/resources/{global_id}`,
+authentification OAuth2 directe au portail) est donc **redondante pour l'usage courant**
+et, comme `demander_suppression_organisation()` ci-dessus, **échoue en `401`** pour tout
+appelant sans compte ACL portail dédié (la plupart). `rudi-commune-starterkit` ne
+l'appelle plus du tout depuis cette découverte. Conservée ici pour compatibilité
+(d'autres appelants l'utilisent encore, ex. `moissonneuse-batteuse`) et pour le cas,
+rare, où un vrai compte ACL existe. **Best-effort**, retourne
+``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
 
 ### Suppression d'un média (fichier storage) — impossible via l'API standard
 
