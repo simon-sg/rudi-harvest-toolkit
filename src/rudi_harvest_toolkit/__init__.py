@@ -17,6 +17,7 @@ from .commune import bbox_depuis_contour
 from .markdown import markdown_vers_html
 from .pivot import (
     LICENCE_ETALAB,
+    LICENCES_DATAGOUV_CONNUES,
     construire_licence,
     construire_rudi_metadata,
     media_dict,
@@ -36,6 +37,7 @@ from .wikipedia import resumer_commune_wikipedia
 
 __all__ = [
     "LICENCE_ETALAB",
+    "LICENCES_DATAGOUV_CONNUES",
     "bbox_depuis_contour",
     "construire_licence",
     "construire_rudi_metadata",

@@ -7,6 +7,7 @@ import unittest
 
 from rudi_harvest_toolkit.pivot import (
     LICENCE_ETALAB,
+    LICENCES_DATAGOUV_CONNUES,
     construire_licence,
     construire_rudi_metadata,
     media_dict,
@@ -202,6 +203,18 @@ class TestConstruireLicence(unittest.TestCase):
         bloc = construire_licence("lov2", None, self._TABLE)
         bloc["licence_label"] = "modifié"
         self.assertEqual(self._TABLE["lov2"]["licence_label"], "etalab-2.0")
+
+
+class TestLicencesDatagouvConnues(unittest.TestCase):
+    def test_lov2_mappe_vers_etalab(self):
+        self.assertEqual(LICENCES_DATAGOUV_CONNUES["lov2"]["licence_label"], "etalab-2.0")
+
+    def test_odc_odbl_mappe_vers_odbl(self):
+        self.assertEqual(LICENCES_DATAGOUV_CONNUES["odc-odbl"]["licence_label"], "odbl-1.0")
+
+    def test_utilisable_avec_construire_licence(self):
+        bloc = construire_licence("lov2", "https://x", LICENCES_DATAGOUV_CONNUES)
+        self.assertEqual(bloc, LICENCE_ETALAB)
 
 
 if __name__ == "__main__":

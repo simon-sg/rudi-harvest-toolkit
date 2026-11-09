@@ -28,6 +28,23 @@ LICENCE_ETALAB = {
     "licence_uri": "https://www.etalab.gouv.fr/licence-ouverte-open-licence",
 }
 
+# Correspondance slug data.gouv.fr (champ ``license`` d'un dataset) -> bloc licence
+# RUDI. Générique (comment data.gouv.fr nomme ses licences), sans rapport avec un
+# producteur ou un socle de JDD précis — réutilisable par n'importe quel harvester
+# consommant ``rudi_harvest_toolkit.datagouv.get_dataset_metadata()``. Même contenu que
+# la table déjà en dur dans ``moissonneuse-batteuse/src/translation/datagouv_to_rudi.py``
+# (pas encore unifiée — voir le backlog v4 de rudi-commune-starterkit).
+LICENCES_DATAGOUV_CONNUES: dict[str, dict] = {
+    "lov2": {
+        "licence_type": "STANDARD", "licence_label": "etalab-2.0",
+        "licence_uri": "https://www.etalab.gouv.fr/licence-ouverte-open-licence",
+    },
+    "odc-odbl": {
+        "licence_type": "STANDARD", "licence_label": "odbl-1.0",
+        "licence_uri": "https://opendatacommons.org/licenses/odbl/1-0",
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers pour les entrées media
