@@ -11,6 +11,7 @@ from rudi_harvest_toolkit.commune import (
     CommuneIntrouvableError,
     ErreurReseauCommune,
     PlusieursCommunesError,
+    bbox_depuis_contour,
     resoudre_commune,
     resoudre_siren_commune,
     valider_code_insee,
@@ -192,6 +193,65 @@ class TestResoudreSirenCommune(unittest.TestCase):
         session.get.side_effect = RuntimeError("timeout")
         with self.assertRaises(ErreurReseauCommune):
             resoudre_siren_commune("35120", session_http=session)
+
+
+class TestBboxDepuisContour(unittest.TestCase):
+    def test_contour_none(self):
+        self.assertIsNone(bbox_depuis_contour(None))
+
+    def test_contour_vide(self):
+        self.assertIsNone(bbox_depuis_contour({}))
+        self.assertIsNone(bbox_depuis_contour({"type": "Polygon", "coordinates": [[]]}))
+
+    def test_type_non_reconnu(self):
+        self.assertIsNone(bbox_depuis_contour({"type": "Point", "coordinates": [-1.78, 48.22]}))
+
+    def test_polygon_simple(self):
+        contour = {
+            "type": "Polygon",
+            "coordinates": [[[-1.80, 48.20], [-1.75, 48.20], [-1.75, 48.25], [-1.80, 48.25], [-1.80, 48.20]]],
+        }
+        bbox = bbox_depuis_contour(contour)
+        self.assertEqual(bbox, {
+            "west_longitude": -1.80, "east_longitude": -1.75,
+            "south_latitude": 48.20, "north_latitude": 48.25,
+        })
+
+    def test_polygon_avec_anneau_interieur(self):
+        exterieur = [[-2.0, 48.0], [2.0, 48.0], [2.0, 50.0], [-2.0, 50.0], [-2.0, 48.0]]
+        trou = [[-0.5, 48.5], [0.5, 48.5], [0.5, 49.5], [-0.5, 49.5], [-0.5, 48.5]]
+        bbox = bbox_depuis_contour({"type": "Polygon", "coordinates": [exterieur, trou]})
+        self.assertEqual(bbox["west_longitude"], -2.0)
+        self.assertEqual(bbox["east_longitude"], 2.0)
+
+    def test_multipolygon(self):
+        contour = {
+            "type": "MultiPolygon",
+            "coordinates": [
+                [[[-5.0, 46.0], [-4.0, 46.0], [-4.0, 47.0], [-5.0, 47.0], [-5.0, 46.0]]],
+                [[[1.0, 41.0], [2.0, 41.0], [2.0, 42.0], [1.0, 42.0], [1.0, 41.0]]],
+            ],
+        }
+        bbox = bbox_depuis_contour(contour)
+        self.assertEqual(bbox, {
+            "west_longitude": -5.0, "east_longitude": 2.0,
+            "south_latitude": 41.0, "north_latitude": 47.0,
+        })
+
+    def test_axes_non_melanges(self):
+        # Latitude et longitude ne doivent jamais être confondues entre elles —
+        # ce test échouerait avec un bug de min/max calculé sur les coordonnées
+        # aplaties sans distinguer les deux axes (toutes les latitudes > toutes
+        # les longitudes ici, contrairement au cas métropolitain).
+        contour = {
+            "type": "Polygon",
+            "coordinates": [[[10.0, 60.0], [20.0, 60.0], [20.0, 70.0], [10.0, 70.0], [10.0, 60.0]]],
+        }
+        bbox = bbox_depuis_contour(contour)
+        self.assertEqual(bbox["west_longitude"], 10.0)
+        self.assertEqual(bbox["east_longitude"], 20.0)
+        self.assertEqual(bbox["south_latitude"], 60.0)
+        self.assertEqual(bbox["north_latitude"], 70.0)
 
 
 if __name__ == "__main__":

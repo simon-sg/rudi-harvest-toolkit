@@ -245,3 +245,45 @@ def resoudre_siren_commune(
             f"Résultat sans SIREN pour la commune {code}."
         )
     return str(siren)
+
+
+def _points_depuis_coordinates(coordinates: object) -> list[list[float]]:
+    """Aplatit récursivement une structure ``coordinates`` GeoJSON (Polygon ou
+    MultiPolygon, anneaux intérieurs compris) en liste de points ``[lon, lat]`` —
+    insensible à la profondeur de nesting (3 niveaux pour MultiPolygon, 2 pour
+    Polygon), plutôt que de coder spécifiquement chaque forme."""
+    if not coordinates:
+        return []
+    if isinstance(coordinates[0], (int, float)):
+        return [coordinates]
+    points: list[list[float]] = []
+    for sous_structure in coordinates:
+        points.extend(_points_depuis_coordinates(sous_structure))
+    return points
+
+
+def bbox_depuis_contour(contour: dict | None) -> dict | None:
+    """Calcule ``{"west_longitude", "east_longitude", "south_latitude",
+    "north_latitude"}`` depuis un GeoJSON ``Polygon``/``MultiPolygon`` (min/max
+    calculés **séparément** sur chaque axe — un min/max unique sur toutes les
+    coordonnées aplaties serait faux dès qu'une commune n'est pas en métropole,
+    où latitude et longitude ne se recoupent jamais numériquement par hasard).
+
+    Retourne ``None`` si ``contour`` est ``None``/vide ou d'un type non reconnu —
+    jamais une bbox vide ou fausse. Calcul naïf valable pour la France métropolitaine
+    ; pas de gestion de l'antiméridien (hors scope — communes ultramarines concernées
+    à vérifier au cas par cas si le socle s'étend un jour au-delà de la métropole).
+    """
+    if not contour or contour.get("type") not in ("Polygon", "MultiPolygon"):
+        return None
+    points = _points_depuis_coordinates(contour.get("coordinates"))
+    if not points:
+        return None
+    longitudes = [p[0] for p in points]
+    latitudes = [p[1] for p in points]
+    return {
+        "west_longitude": min(longitudes),
+        "east_longitude": max(longitudes),
+        "south_latitude": min(latitudes),
+        "north_latitude": max(latitudes),
+    }
