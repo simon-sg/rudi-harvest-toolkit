@@ -10,10 +10,12 @@ Modules :
 - ``rudi_client`` : publication sur un nœud RUDI (métadonnées + médias) ;
 - ``publish`` : garde-fou de publication (verrou + suivi des local_id du run) ;
 - ``commune`` : résolution d'une commune par code INSEE (identité, géographie, SIREN) ;
-- ``wikipedia`` : résumé Wikipédia d'une commune, désambiguïsé par code INSEE.
+- ``wikipedia`` : résumé Wikipédia d'une commune, désambiguïsé par code INSEE ;
+- ``contacts`` : extraction/résolution de contacts (data.gouv contact_points, repli).
 """
 
 from .commune import bbox_depuis_contour
+from .contacts import contacter_pardefaut, extraire_contacts_datagouv, resoudre_contacts
 from .markdown import markdown_vers_html
 from .pivot import (
     LICENCE_ETALAB,
@@ -43,7 +45,9 @@ __all__ = [
     "construire_rudi_metadata",
     "charger_etat",
     "construire_index_dossier",
+    "contacter_pardefaut",
     "dataset_a_change",
+    "extraire_contacts_datagouv",
     "markdown_vers_html",
     "media_dict",
     "media_filtre",
@@ -51,6 +55,7 @@ __all__ = [
     "media_pdf",
     "media_source",
     "parser_date_http",
+    "resoudre_contacts",
     "resumer_commune_wikipedia",
     "sauvegarder_etat",
 ]
