@@ -15,6 +15,7 @@ Usage :
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import os
 import time
@@ -155,10 +156,30 @@ def invalider(url: str, *, dossier: str | os.PathLike | None = None) -> bool:
     return False
 
 
+def date_fichier_cache(chemin: str) -> str | None:
+    """Date de dernière modification (mtime) de ``chemin``, en ISO 8601 UTC, ou
+    ``None`` si le fichier n'existe pas (v4 de rudi-commune-starterkit, Axe 2).
+
+    Mécanisme retenu pour les sources sans date fiable côté serveur (BAN, DVF) :
+    la mtime du fichier **en cache** (pas une sonde HEAD à chaque run) garantit par
+    construction que la date affichée ne dépasse jamais l'âge réel du contenu
+    effectivement publié — un fichier servi depuis le cache ne peut jamais afficher
+    une date plus récente que son contenu.
+    """
+    try:
+        horodatage = os.path.getmtime(chemin)
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(
+        horodatage, tz=datetime.timezone.utc,
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 __all__ = [
     "TTL_JOURS_DEFAUT",
     "ErreurTelechargement",
     "chemin_cache",
+    "date_fichier_cache",
     "dossier_cache_defaut",
     "invalider",
     "purger_cache",

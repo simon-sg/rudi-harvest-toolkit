@@ -8,6 +8,7 @@ from unittest import mock
 from rudi_harvest_toolkit.download_cache import (
     ErreurTelechargement,
     chemin_cache,
+    date_fichier_cache,
     dossier_cache_defaut,
     invalider,
     purger_cache,
@@ -178,6 +179,28 @@ class TestPurgerEtInvalider(unittest.TestCase):
 
     def test_invalider_url_absente_retourne_faux(self):
         self.assertFalse(invalider("https://exemple.fr/absent.csv", dossier=self.dossier))
+
+
+class TestDateFichierCache(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dossier = self._tmp.name
+
+    def test_retourne_la_mtime_en_iso(self):
+        import datetime
+        chemin = os.path.join(self.dossier, "f.csv")
+        with open(chemin, "w") as f:
+            f.write("x")
+        horodatage = datetime.datetime(
+            2026, 10, 21, 7, 28, 0, tzinfo=datetime.timezone.utc,
+        ).timestamp()
+        os.utime(chemin, (horodatage, horodatage))
+        resultat = date_fichier_cache(chemin)
+        self.assertEqual(resultat, "2026-10-21T07:28:00Z")
+
+    def test_fichier_absent_retourne_none(self):
+        self.assertIsNone(date_fichier_cache(os.path.join(self.dossier, "absent.csv")))
 
 
 if __name__ == "__main__":
