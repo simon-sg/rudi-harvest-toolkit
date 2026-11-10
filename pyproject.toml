@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "requests>=2.28",
     "rudi-node-write>=1.4.4",
+    "pyarrow>=14",
 ]
 
 [project.optional-dependencies]

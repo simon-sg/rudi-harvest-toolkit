@@ -12,6 +12,7 @@ from rudi_harvest_toolkit.tabular import (
     filtrer_csv,
     iter_lignes_csv,
     lire_csv_filtre,
+    lire_parquet_filtre,
     normaliser_nom_colonne,
     resoudre_colonne,
 )
@@ -227,6 +228,61 @@ class TestLectureUrl(unittest.TestCase):
             lignes = list(iter_lignes_csv("https://exemple.fr/x.csv"))
         self.assertEqual(lignes, [{"a": "1", "b": "2"}])
         session.get.assert_called_once()
+
+
+class TestLireParquetFiltre(unittest.TestCase):
+    def setUp(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.chemin = os.path.join(self._tmp.name, "x.parquet")
+        table = pa.table({
+            "code_commune": ["35120", "35238", "35120"],
+            "nom": ["Gévezé A", "Rennes", "Gévezé B"],
+            "voix": [100, 5000, 50],
+        })
+        pq.write_table(table, self.chemin)
+
+    def test_filtre_sur_toutes_les_colonnes_par_defaut(self):
+        lignes, entetes = lire_parquet_filtre(self.chemin, "code_commune", "35120")
+        self.assertEqual(len(lignes), 2)
+        self.assertEqual(entetes, ["code_commune", "nom", "voix"])
+        self.assertEqual(lignes[0]["nom"], "Gévezé A")
+
+    def test_valeurs_python_natives_jamais_numpy(self):
+        lignes, _ = lire_parquet_filtre(self.chemin, "code_commune", "35120")
+        self.assertIsInstance(lignes[0]["voix"], int)
+        self.assertNotIn("numpy", type(lignes[0]["voix"]).__module__)
+
+    def test_projection_restreint_les_colonnes_retournees(self):
+        lignes, entetes = lire_parquet_filtre(
+            self.chemin, "code_commune", "35120", colonnes=["nom"],
+        )
+        self.assertEqual(entetes, ["nom"])
+        self.assertEqual(lignes, [{"nom": "Gévezé A"}, {"nom": "Gévezé B"}])
+        self.assertNotIn("code_commune", lignes[0])
+
+    def test_projection_incluant_deja_la_colonne_de_filtrage(self):
+        lignes, entetes = lire_parquet_filtre(
+            self.chemin, "code_commune", "35120", colonnes=["code_commune", "nom"],
+        )
+        self.assertEqual(entetes, ["code_commune", "nom"])
+        self.assertEqual(lignes[0]["code_commune"], "35120")
+
+    def test_colonne_introuvable_leve(self):
+        with self.assertRaises(ColonneIntrouvableError):
+            lire_parquet_filtre(self.chemin, "colonne_absente", "x")
+
+    def test_aucune_ligne_correspondante(self):
+        lignes, _ = lire_parquet_filtre(self.chemin, "code_commune", "99999")
+        self.assertEqual(lignes, [])
+
+    def test_resolution_tolerante_du_nom_de_colonne(self):
+        lignes, _ = lire_parquet_filtre(self.chemin, "Code Commune", "35238")
+        self.assertEqual(len(lignes), 1)
+        self.assertEqual(lignes[0]["nom"], "Rennes")
 
 
 if __name__ == "__main__":

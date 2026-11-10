@@ -350,3 +350,53 @@ def lire_csv_filtre(
             if _correspond(ligne.get(colonne_reelle), cible, prefixe=prefixe)
         ]
     return lignes, entetes
+
+
+def lire_parquet_filtre(
+    chemin: str,
+    colonne: str,
+    valeur: object,
+    *,
+    colonnes: list[str] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Variante Parquet de :func:`lire_csv_filtre` — même contrat de retour
+    ``(lignes, entetes)``, matérialisé (pas un itérateur).
+
+    ``colonnes`` restreint la projection (lue depuis le disque) — important sur un
+    fichier de plusieurs centaines de Mo où seules quelques colonnes sont utiles.
+    ``None`` lit toutes les colonnes. La colonne de filtrage est toujours lue en
+    interne même si absente de ``colonnes`` (nécessaire pour filtrer), mais n'apparaît
+    dans les lignes/en-têtes retournés que si explicitement demandée.
+
+    Comparaison déléguée à :func:`_correspond` (jamais un filtre ``pyarrow`` natif
+    typé, qui ferait échouer silencieusement un ``"35120"`` contre une colonne
+    entière). Colonne absente : lève :class:`ColonneIntrouvableError`. Valeurs : types
+    Python natifs (jamais des scalaires ``numpy``, qui casseraient silencieusement
+    ``csv.DictWriter``)."""
+    import pyarrow.parquet as pq
+
+    fichier = pq.ParquetFile(chemin)
+    entetes_fichier = list(fichier.schema_arrow.names)
+    colonne_reelle = resoudre_colonne(entetes_fichier, colonne)
+
+    if colonnes is None:
+        projection = None
+        entetes_retour = entetes_fichier
+        colonne_ajoutee = False
+    else:
+        projection = list(colonnes)
+        colonne_ajoutee = colonne_reelle not in projection
+        if colonne_ajoutee:
+            projection = projection + [colonne_reelle]
+        entetes_retour = list(colonnes)
+
+    table = fichier.read(columns=projection)
+    pydict = table.to_pydict()
+    noms_lignes = [n for n in table.column_names if not (colonne_ajoutee and n == colonne_reelle)]
+    cible = _normaliser_valeur(valeur)
+
+    lignes = []
+    for i in range(table.num_rows):
+        if _correspond(pydict[colonne_reelle][i], cible, prefixe=False):
+            lignes.append({nom: pydict[nom][i] for nom in noms_lignes})
+    return lignes, entetes_retour
