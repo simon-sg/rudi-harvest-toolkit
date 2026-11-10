@@ -1,5 +1,21 @@
 # Changelog
 
+## Non publié — `rne.py` (maire actuel) + enrichissement `wikipedia.py`
+
+Correction post-livraison de la v3 de `rudi-commune-starterkit`, suite à un test réel
+(commune d'Acigné) :
+
+- **Nouveau** `rne.py` : `maire_actuel(code_insee)` — maire en exercice d'une commune
+  via le Répertoire National des Élus (Ministère de l'Intérieur), préféré à Wikidata
+  (propriété P6) pour une donnée qui change à chaque élection municipale sans que
+  Wikidata ne le reflète de façon fiable (constaté : mandat 2014 affiché sans date de
+  fin, alors que le RNE avait déjà le mandat renouvelé en mars 2026).
+- `wikipedia.py` : `resumer_commune_wikipedia()` retourne désormais aussi
+  `superficie_km2`/`gentile` (Wikidata P2046/P1549, requête SPARQL complémentaire sur
+  le QID déjà résolu, best-effort — un échec ici n'invalide pas le résumé). Garde-fou
+  anti-ébauches (`longueur_min`) abaissé de 250 à 80 caractères : un intro réel et
+  court (ex. 192 caractères pour Acigné, 2 phrases factuelles) n'est pas une ébauche.
+
 ## Non publié — nouveaux modules partagés pour la v3 de rudi-commune-starterkit
 
 Code générique extrait lors de la v3 de `rudi-commune-starterkit` (voir son propre

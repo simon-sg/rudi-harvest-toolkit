@@ -26,6 +26,18 @@ def _extraits_reponse(pages):
     return r
 
 
+def _infos_reponse(superficie=None, gentile=None):
+    binding = {}
+    if superficie is not None:
+        binding["superficie"] = {"type": "literal", "value": str(superficie)}
+    if gentile is not None:
+        binding["gentile"] = {"type": "literal", "value": gentile, "xml:lang": "fr"}
+    r = mock.Mock()
+    r.raise_for_status = mock.Mock()
+    r.json.return_value = {"results": {"bindings": [binding] if binding else []}}
+    return r
+
+
 def _binding(qid, titre, type_qid=None):
     b = {
         "item": {"type": "uri", "value": f"http://www.wikidata.org/entity/{qid}"},
@@ -42,12 +54,38 @@ class TestResumerCommuneWikipedia(unittest.TestCase):
         session.get.side_effect = [
             _sparql_reponse([_binding("Q12345", "Gévezé", "Q484170")]),
             _extraits_reponse({"1": {"title": "Gévezé", "extract": _EXTRAIT_LONG}}),
+            _infos_reponse(superficie=29.55, gentile="Gévézéens"),
         ]
         resultat = resumer_commune_wikipedia("35120", session_http=session)
         self.assertIsNotNone(resultat)
         self.assertEqual(resultat["qid"], "Q12345")
         self.assertEqual(resultat["summary"], _EXTRAIT_LONG)
         self.assertEqual(resultat["url"], "https://fr.wikipedia.org/wiki/G%C3%A9vez%C3%A9")
+        self.assertEqual(resultat["superficie_km2"], 29.55)
+        self.assertEqual(resultat["gentile"], "Gévézéens")
+
+    def test_infos_complementaires_absentes_omises_jamais_devinees(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            _sparql_reponse([_binding("Q1", "Acigné", "Q484170")]),
+            _extraits_reponse({"1": {"title": "Acigné", "extract": _EXTRAIT_LONG}}),
+            _infos_reponse(),
+        ]
+        resultat = resumer_commune_wikipedia("35001", session_http=session)
+        self.assertNotIn("superficie_km2", resultat)
+        self.assertNotIn("gentile", resultat)
+
+    def test_echec_infos_complementaires_ninvalide_pas_le_resume(self):
+        session = mock.Mock()
+        session.get.side_effect = [
+            _sparql_reponse([_binding("Q1", "Acigné", "Q484170")]),
+            _extraits_reponse({"1": {"title": "Acigné", "extract": _EXTRAIT_LONG}}),
+            RuntimeError("DNS"),
+        ]
+        resultat = resumer_commune_wikipedia("35001", session_http=session)
+        self.assertIsNotNone(resultat)
+        self.assertEqual(resultat["summary"], _EXTRAIT_LONG)
+        self.assertNotIn("superficie_km2", resultat)
 
     def test_aucune_entite_retourne_none(self):
         session = mock.Mock()
@@ -77,6 +115,7 @@ class TestResumerCommuneWikipedia(unittest.TestCase):
                 _binding("Q111", "Gévezé", "Q484170"),
             ]),
             _extraits_reponse({"1": {"title": "Gévezé", "extract": _EXTRAIT_LONG}}),
+            _infos_reponse(),
         ]
         resultat = resumer_commune_wikipedia("35096", session_http=session)
         self.assertEqual(resultat["qid"], "Q111")
@@ -106,6 +145,7 @@ class TestResumerCommuneWikipedia(unittest.TestCase):
             session.get.side_effect = [
                 _sparql_reponse([_binding("Q1", "Gévezé", "Q484170")]),
                 _extraits_reponse({"1": {"title": "Gévezé", "extract": _EXTRAIT_LONG}}),
+                _infos_reponse(),
             ]
             premier = resumer_commune_wikipedia("35120", session_http=session, dossier_cache=tmp)
             self.assertIsNotNone(premier)
@@ -137,12 +177,13 @@ class TestResumerCommuneWikipedia(unittest.TestCase):
             session.get.side_effect = [
                 _sparql_reponse([_binding("Q1", "Gévezé", "Q484170")]),
                 _extraits_reponse({"1": {"title": "Gévezé", "extract": _EXTRAIT_LONG}}),
+                _infos_reponse(),
             ]
             resultat = resumer_commune_wikipedia(
                 "35120", session_http=session, dossier_cache=tmp, ttl_jours=30,
             )
             self.assertIsNotNone(resultat)
-            self.assertEqual(session.get.call_count, 2)
+            self.assertEqual(session.get.call_count, 3)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,12 @@ _WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 _WIKIPEDIA_API = "https://fr.wikipedia.org/w/api.php"
 _TIMEOUT = 15
 _TTL_JOURS_DEFAUT = 30
-_LONGUEUR_MIN_DEFAUT = 250
+# Abaissé de 250 à 80 (v3, retour utilisateur sur Acigné) : un intro réel et
+# substantiel peut faire moins de 250 caractères pour une petite commune (ex. Acigné,
+# 192 caractères, 2 phrases factuelles) — 250 rejetait à tort ce cas, pas seulement les
+# ébauches véritablement vides. Le second paragraphe (maire/gentilé/superficie,
+# construit par description_commune.py côté starterkit) compense un intro court.
+_LONGUEUR_MIN_DEFAUT = 80
 # Q484170 = "commune de France" (Wikidata) — tie-break de désambiguïsation quand
 # plusieurs entités Wikidata portent le même P374 (vérifié : le code 35096 en a 2).
 _QID_COMMUNE_DE_FRANCE = "Q484170"
@@ -31,6 +36,16 @@ SELECT ?item ?article ?type WHERE {{
   ?item wdt:P374 "{code_insee}".
   OPTIONAL {{ ?item wdt:P31 ?type. }}
   OPTIONAL {{ ?article schema:about ?item; schema:isPartOf <https://fr.wikipedia.org/>. }}
+}}
+"""
+
+# P2046 = superficie (unité quasi toujours km² pour une commune française, jamais
+# vérifiée par requête séparée — gain négligeable face au risque de 2e aller-retour).
+# P1549 = gentilé (monolingue fr) — souvent absent, jamais deviné : omis si absent.
+_SPARQL_INFOS_TEMPLATE = """
+SELECT ?superficie ?gentile WHERE {{
+  OPTIONAL {{ wd:{qid} wdt:P2046 ?superficie. }}
+  OPTIONAL {{ wd:{qid} wdt:P1549 ?gentile. FILTER(LANG(?gentile) = "fr") }}
 }}
 """
 
@@ -126,6 +141,35 @@ def _extrait_wikipedia(titre: str, *, session_http) -> dict | None:
     return None
 
 
+def _infos_complementaires_wikidata(qid: str, *, session_http) -> dict:
+    """Superficie (km², P2046) et gentilé (P1549, fr) pour ce QID déjà résolu — absents
+    si non renseignés sur Wikidata, jamais devinés. Best-effort : une erreur réseau ici
+    ne doit pas invalider le résumé Wikipédia déjà obtenu."""
+    try:
+        reponse = session_http.get(
+            _WIKIDATA_SPARQL,
+            params={"query": _SPARQL_INFOS_TEMPLATE.format(qid=qid), "format": "json"},
+            headers={"Accept": "application/sparql-results+json"},
+            timeout=_TIMEOUT,
+        )
+        reponse.raise_for_status()
+        bindings = reponse.json().get("results", {}).get("bindings", [])
+    except Exception:
+        return {}
+    if not bindings:
+        return {}
+    b = bindings[0]
+    infos: dict = {}
+    if "superficie" in b:
+        try:
+            infos["superficie_km2"] = float(b["superficie"]["value"])
+        except (KeyError, ValueError):
+            pass
+    if "gentile" in b:
+        infos["gentile"] = b["gentile"]["value"]
+    return infos
+
+
 def resumer_commune_wikipedia(
     code_insee: str,
     *,
@@ -139,9 +183,12 @@ def resumer_commune_wikipedia(
     ``action=query&prop=extracts&exintro=1&explaintext=1`` (pas ``page/summary``, qui
     ne retourne que 2-4 phrases — insuffisant face à la demande "1-2 paragraphes").
 
-    Retourne ``{"caption", "summary", "url", "qid"}`` ou ``None`` si absent, trop court
-    (< ``longueur_min`` caractères — garde-fou contre les ébauches faméliques) ou en
-    cas d'échec réseau/parsing (toujours silencieux, jamais bloquant pour l'appelant).
+    Retourne ``{"caption", "summary", "url", "qid", "superficie_km2"?, "gentile"?}`` ou
+    ``None`` si absent, trop court (< ``longueur_min`` caractères — garde-fou contre les
+    ébauches réellement vides) ou en cas d'échec réseau/parsing (toujours silencieux,
+    jamais bloquant pour l'appelant). ``superficie_km2``/``gentile`` (Wikidata P2046/
+    P1549) sont omis s'ils ne sont pas renseignés sur Wikidata — jamais devinés ; un
+    échec de cette requête complémentaire n'invalide pas le résumé déjà obtenu.
     Cache indexé par ``code_insee`` (clé stable, non ambiguë contrairement à un nom),
     écriture atomique (tmp + ``os.replace``, plusieurs process peuvent tourner) — omis
     si ``dossier_cache`` n'est pas fourni.
@@ -162,12 +209,14 @@ def resumer_commune_wikipedia(
             if titre:
                 extrait = _extrait_wikipedia(titre, session_http=session_http)
                 if extrait and len(extrait["extrait"]) >= longueur_min:
+                    qid = _qid_depuis_uri(entite["item"]["value"])
                     resultat = {
                         "caption": extrait["titre"],
                         "summary": extrait["extrait"],
                         "url": "https://fr.wikipedia.org/wiki/"
                         + quote(extrait["titre"].replace(" ", "_")),
-                        "qid": _qid_depuis_uri(entite["item"]["value"]),
+                        "qid": qid,
+                        **_infos_complementaires_wikidata(qid, session_http=session_http),
                     }
     except Exception:
         resultat = None
