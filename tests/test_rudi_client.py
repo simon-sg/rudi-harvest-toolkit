@@ -28,6 +28,7 @@ from rudi_harvest_toolkit.rudi_client import (
     supprimer_dataset_portail,
     supprimer_organisation,
     televerser_piece_jointe,
+    valider_alignement_medias,
 )
 
 
@@ -386,6 +387,53 @@ class TestDedoublonnerMediasFile(unittest.TestCase):
                   {"media_type": "FILE", "media_name": "b.json"}]
         _, fichiers_ok = _dedoublonner_medias_file(medias, ["/d/a.csv"])
         self.assertEqual(fichiers_ok, ["/d/a.csv"])
+
+
+class TestValiderAlignementMedias(unittest.TestCase):
+    def test_ordre_correct_ne_leve_pas(self):
+        medias = [
+            {"media_type": "FILE", "media_name": "a.csv"},
+            {"media_type": "SERVICE", "media_name": "source-metadata"},
+        ]
+        valider_alignement_medias(medias, ["/d/a.csv"])
+
+    def test_tolere_un_file_hybride_deja_complet_apres_les_fichiers_reels(self):
+        medias = [
+            {"media_type": "FILE", "media_name": "a.geojson"},
+            {"media_type": "FILE", "media_name": "a.csv", "file_size": 10,
+             "checksum": {"hash": "abc"}},
+        ]
+        valider_alignement_medias(medias, ["/d/a.geojson"])
+
+    def test_leve_si_un_file_hybride_complet_precede_un_fichier_reel(self):
+        # Ordre « naturel » mais fautif : le GeoJSON ajouté après le CSV hybride
+        # existant — la boucle d'upload écraserait le CSV hybride avec les infos
+        # d'upload du GeoJSON, sans jamais uploader le GeoJSON lui-même.
+        medias = [
+            {"media_type": "FILE", "media_name": "a.csv", "file_size": 10,
+             "checksum": {"hash": "abc"}},
+            {"media_type": "FILE", "media_name": "a.geojson"},
+        ]
+        with self.assertRaises(ValueError):
+            valider_alignement_medias(medias, ["/d/a.geojson"])
+
+    def test_leve_si_comptage_incoherent(self):
+        medias = [{"media_type": "FILE", "media_name": "a.csv"}]
+        with self.assertRaises(ValueError):
+            valider_alignement_medias(medias, ["/d/a.csv", "/d/b.csv"])
+
+    def test_leve_si_service_precede_un_fichier_reel(self):
+        medias = [
+            {"media_type": "SERVICE", "media_name": "source-metadata"},
+            {"media_type": "FILE", "media_name": "a.csv"},
+        ]
+        with self.assertRaises(ValueError):
+            valider_alignement_medias(medias, ["/d/a.csv"])
+
+    def test_aucun_fichier_et_aucun_media_file_reel_ne_leve_pas(self):
+        medias = [{"media_type": "FILE", "media_name": "a.csv", "file_size": 10,
+                    "checksum": {"hash": "abc"}}]
+        valider_alignement_medias(medias, [])
 
 
 class TestDemanderCreationOrganisation(unittest.TestCase):

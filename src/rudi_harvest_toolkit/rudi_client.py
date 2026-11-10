@@ -1010,6 +1010,46 @@ def _dedoublonner_medias_file(
     return medias_uniques, fichiers_alignes
 
 
+def valider_alignement_medias(medias: list[dict], fichiers_filtres: list[str]) -> None:
+    """
+    Vérifie que les médias FILE réellement à uploader occupent exactement les
+    positions ``0..len(fichiers_filtres)-1`` de ``medias``, dans le même ordre.
+
+    La boucle d'upload de ``publier_dataset()`` est positionnelle :
+    ``medias[i]`` est écrasé avec les infos d'upload de ``fichiers_filtres[i]``. Un
+    média FILE hybride déjà complet (``_media_file_deja_complet()`` — ``checksum`` +
+    ``file_size`` déjà renseignés, jamais dans ``fichiers_filtres``) placé **avant**
+    la fin de ce bloc corromprait silencieusement l'upload : le fichier réel ne
+    serait jamais envoyé, et l'entrée hybride serait écrasée avec les infos d'upload
+    d'un autre fichier. Les médias FILE hybrides déjà complets doivent donc toujours
+    **suivre**, jamais précéder ni s'intercaler parmi, les médias FILE réellement à
+    uploader.
+
+    À appeler après ``_dedoublonner_medias_file()`` et avant la boucle d'upload —
+    jamais avant la déduplication (des doublons FILE légitimes y existent, cf. bug
+    A7) ni après le début de la boucle (upload partiel avant détection).
+
+    Lève ``ValueError`` (nommant l'index fautif) si cette règle n'est pas respectée,
+    y compris sur un simple écart de comptage.
+    """
+    n = len(fichiers_filtres)
+    medias_file = [(i, m) for i, m in enumerate(medias) if m.get("media_type") == "FILE"]
+    reels = [(i, m) for i, m in medias_file if not _media_file_deja_complet(m)]
+    if len(reels) != n:
+        raise ValueError(
+            f"{len(reels)} média(s) FILE à uploader dans 'medias' mais "
+            f"{n} chemin(s) dans fichiers_filtres — comptage incohérent."
+        )
+    for position_attendue, (index_reel, _media) in enumerate(reels):
+        if index_reel != position_attendue:
+            raise ValueError(
+                f"medias[{index_reel}] est un média FILE à uploader mais n'est pas à "
+                f"la position {position_attendue} attendue par fichiers_filtres — un "
+                f"autre média (hybride déjà complet, ou SERVICE) le précède, ce qui "
+                f"corromprait l'upload positionnel."
+            )
+
+
 def publier_dataset(
     conf: dict,
     rudi_metadata: dict,
@@ -1105,6 +1145,8 @@ def publier_dataset(
               f"retiré(s) (sinon bug portail A7 « Duplicate key » → ERR-500).")
         medias[:] = medias_dedoublonnes
         fichiers_filtres = fichiers_alignes
+
+    valider_alignement_medias(medias, fichiers_filtres)
 
     # Médias FILE écartés (upload refusé) — ne doivent pas faire échouer le reste du
     # dataset ; typiquement une variante JSON trop verbeuse d'un CSV déjà publiable
