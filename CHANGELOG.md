@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0 — 2026-11-10
+
+### Dates réelles (`http_dates.py`) et GeoJSON par ligne (`geojson.py`)
+
+Nouveaux modules pour la v4 de `rudi-commune-starterkit` (Axes 2 et 3) :
+
+- **`http_dates.py`** : `entete_derniere_modification()` (sonde HEAD/repli GET, pour
+  une URL arbitraire), `date_dataset_ods()` (`metas.default.modified` d'un dataset
+  Opendatasoft), `parser_date_iso_stricte()` (parseur ISO 8601 public, réutilisable).
+  **Ne délègue jamais à `pivot.parser_date_http()`** : cette dernière retourne
+  `datetime.now(UTC)` sur une date non parsable (repli pensé pour ne jamais bloquer
+  l'assemblage d'un dataset) — ce module garantit `None` à la place, jamais une date
+  inventée.
+- **`download_cache.date_fichier_cache(chemin)`** : mtime d'un fichier en cache, ISO
+  8601 UTC — pour les connecteurs qui dérivent leur date de publication de la date de
+  récupération locale plutôt que d'une sonde réseau supplémentaire.
+- **`geojson.py`** : `construire_feature_collection()` (FeatureCollection GeoJSON pure,
+  un Point par ligne ayant des coordonnées exploitables, lignes invalides omises en
+  silence), `AucuneGeometrieValide` (dégradation attendue, à distinguer d'une erreur de
+  programmation). Jamais d'inversion `[lat, lon]` — testé explicitement (le seul
+  garde-fou qui détecte ce piège, un contrôle de bornes ne le détecte pas).
+- **`rudi_client.valider_alignement_medias()`** : garde-fou inséré avant la boucle
+  d'upload de `publier_dataset()` — vérifie l'**ordre**, pas seulement le compte, des
+  médias `FILE` réellement à uploader par rapport aux médias `FILE` hybrides déjà
+  complets (un trou purement comptage aurait laissé passer une corruption silencieuse
+  sur un module combinant les deux types, trouvé en relecture indépendante du plan v4).
+
 ## 0.3.0 — 2026-11-10
 
 ### `rne.py` (maire actuel) + enrichissement `wikipedia.py`
