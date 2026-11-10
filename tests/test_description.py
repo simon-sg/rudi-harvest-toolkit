@@ -53,6 +53,39 @@ class TestConstruireDescriptionStructuree(unittest.TestCase):
         self.assertLess(texte.index("Variables publiées"), texte.index("Mise à jour"))
         self.assertLess(texte.index("Mise à jour"), texte.index("Source :"))
 
+    def test_glossaire_et_limites_absents_par_defaut_sortie_inchangee(self):
+        self.assertNotIn("Codes et variables", construire_description_structuree(**_ARGS))
+        self.assertNotIn("Limites de couverture", construire_description_structuree(**_ARGS))
+
+    def test_glossaire_rend_chaque_entree(self):
+        texte = construire_description_structuree(
+            **_ARGS, glossaire={"LFI": "La France insoumise", "LR": "Les Républicains"},
+        )
+        self.assertIn("- LFI : La France insoumise", texte)
+        self.assertIn("- LR : Les Républicains", texte)
+
+    def test_limites_rend_chaque_entree(self):
+        texte = construire_description_structuree(
+            **_ARGS, limites=["Carte : 8 points sur 10 lignes.", "Pas de second tour."],
+        )
+        self.assertIn("- Carte : 8 points sur 10 lignes.", texte)
+        self.assertIn("- Pas de second tour.", texte)
+
+    def test_glossaire_et_limites_avant_mise_a_jour(self):
+        texte = construire_description_structuree(
+            **_ARGS, glossaire={"LFI": "La France insoumise"}, limites=["Pas de second tour."],
+        )
+        self.assertLess(texte.index("Variables publiées"), texte.index("Codes et variables"))
+        self.assertLess(texte.index("Codes et variables"), texte.index("Limites de couverture"))
+        self.assertLess(texte.index("Limites de couverture"), texte.index("Mise à jour"))
+
+    def test_rendu_html_glossaire_et_limites_sont_des_listes(self):
+        texte = construire_description_structuree(
+            **_ARGS, glossaire={"LFI": "La France insoumise"}, limites=["Pas de second tour."],
+        )
+        html = markdown_vers_html(texte)
+        self.assertEqual(html.count("<ul>"), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
