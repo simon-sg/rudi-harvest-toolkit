@@ -1,5 +1,30 @@
 # Changelog
 
+## Non publié — nouveaux modules partagés pour la v3 de rudi-commune-starterkit
+
+Code générique extrait lors de la v3 de `rudi-commune-starterkit` (voir son propre
+BACKLOG/CHANGELOG pour le contexte produit) :
+
+- `wikipedia.py` (nouveau) : résumé Wikipédia d'une commune désambiguïsé par code
+  INSEE via Wikidata (`P374`), extrait MediaWiki complet (pas le résumé court de l'API
+  `page/summary`), cache par code INSEE.
+- `contacts.py` (nouveau) : migré depuis `moissonneuse-batteuse/src/connectors/
+  contacts.py` (`extraire_contacts_datagouv()`, `resoudre_contacts()`,
+  `contacter_pardefaut()`) — `email_par_defaut()` importée depuis `rudi_client`
+  plutôt que redéfinie. `moissonneuse-batteuse` garde un shim de réexportation,
+  zéro changement pour ses 6 appelants existants.
+- `description.py` (nouveau) : `construire_description_structuree()`, assembleur de
+  mise en page Markdown pur (quoi/comment construit/variables/fréquence/source),
+  sans connaissance du domaine.
+- `commune.py` : nouvelle `bbox_depuis_contour()` (bbox dataset simple depuis un
+  GeoJSON Polygon/MultiPolygon).
+- `pivot.py` : nouvelle constante `LICENCES_DATAGOUV_CONNUES` (table slug data.gouv.fr
+  → licence RUDI, `lov2`/`odc-odbl`), réutilisable par tout harvester consommant
+  `get_dataset_metadata()`.
+- `tabular.py` : nouveau paramètre `prefixe: bool = False` sur `filtrer_csv()`/
+  `lire_csv_filtre()` (égalité ou préfixe sur la colonne filtrée, ex. SIRET préfixé
+  par un SIREN) — lève `ValueError` si `prefixe=True` avec une valeur vide.
+
 ## Non publié — `supprimer_dataset_portail()` documentée comme redondante
 
 Suite du bug ci-dessous : une fois l'URL corrigée, le `401` est resté — pas un
