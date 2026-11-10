@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 (en cours — Axe 5 de rudi-commune-starterkit, incrément A)
+
+### `tabular.lire_parquet_filtre()` + dépendance `pyarrow` obligatoire
+
+Variante Parquet de `lire_csv_filtre()` — même contrat de retour `(lignes, entetes)`,
+projection de colonnes, comparaison déléguée à `_correspond()` (jamais un filtre
+`pyarrow` natif typé), valeurs en types Python natifs (`to_pydict()`, jamais de
+scalaires `numpy`). `pyarrow>=14` ajouté aux dépendances obligatoires du package
+(premier et seul consommateur actuel : le jeu agrégé « donnees-des-elections-agregees »,
+232 Mo par commune en Parquet contre 2,38 Go en CSV).
+
+### `description.construire_description_structuree(glossaire=, limites=)`
+
+Deux nouveaux paramètres optionnels (`None` = sortie inchangée, non-régression
+testée) : `glossaire` (`{code: libellé}`, rendu « Codes et variables : ») et `limites`
+(liste de phrases, rendu « Limites de couverture : »). Rend visible, directement dans
+la fiche catalogue plutôt que dans un BACKLOG.md jamais consulté par un lecteur du
+nœud, les nomenclatures opaques et les dégradations attendues — infrastructure
+partagée entre l'Axe 4 (budget/DVF/DECP/eau_potable) et l'Axe 5 (élections) du plan v4.
+
 ## 0.4.0 — 2026-11-10
 
 ### Dates réelles (`http_dates.py`) et GeoJSON par ligne (`geojson.py`)
