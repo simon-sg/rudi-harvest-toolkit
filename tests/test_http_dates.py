@@ -3,7 +3,9 @@ rudi-commune-starterkit, Axe 2). Zéro réseau (session mockée)."""
 import unittest
 from unittest import mock
 
-from rudi_harvest_toolkit.http_dates import entete_derniere_modification
+from rudi_harvest_toolkit.http_dates import (
+    date_dataset_ods, entete_derniere_modification, parser_date_iso_stricte,
+)
 
 
 def _reponse(status_code, headers=None):
@@ -89,6 +91,59 @@ class TestEnteteDerniereModification(unittest.TestCase):
             resultat = entete_derniere_modification("https://x")
         self.assertIsNone(resultat)
         session_defaut.head.assert_called_once()
+
+
+class TestParserDateIsoStricte(unittest.TestCase):
+    def test_parse_iso_avec_microsecondes_et_offset(self):
+        self.assertEqual(
+            parser_date_iso_stricte("2026-11-10T06:01:21.851000+00:00"),
+            "2026-11-10T06:01:21Z",
+        )
+
+    def test_none_sur_entree_vide(self):
+        self.assertIsNone(parser_date_iso_stricte(None))
+        self.assertIsNone(parser_date_iso_stricte(""))
+
+    def test_none_sur_format_http_jamais_devine(self):
+        # Un format HTTP (RFC 2822) n'est pas de l'ISO — jamais inventé en repli.
+        self.assertIsNone(parser_date_iso_stricte("Wed, 21 Oct 2026 07:28:00 GMT"))
+
+    def test_none_sur_texte_non_parsable(self):
+        self.assertIsNone(parser_date_iso_stricte("pas-une-date"))
+
+
+class TestDateDatasetOds(unittest.TestCase):
+    def _reponse(self, modified):
+        r = mock.Mock()
+        r.raise_for_status = mock.Mock()
+        r.json.return_value = {"metas": {"default": {"modified": modified}}}
+        return r
+
+    def test_lit_metas_default_modified(self):
+        session = mock.Mock()
+        session.get.return_value = self._reponse("2026-11-10T06:01:21.851000+00:00")
+        resultat = date_dataset_ods("https://x/datasets/d", session_http=session)
+        self.assertEqual(resultat, "2026-11-10T06:01:21Z")
+
+    def test_champ_absent_retourne_none(self):
+        session = mock.Mock()
+        r = mock.Mock()
+        r.raise_for_status = mock.Mock()
+        r.json.return_value = {"metas": {"default": {}}}
+        session.get.return_value = r
+        self.assertIsNone(date_dataset_ods("https://x/datasets/d", session_http=session))
+
+    def test_exception_reseau_retourne_none(self):
+        session = mock.Mock()
+        session.get.side_effect = RuntimeError("DNS")
+        self.assertIsNone(date_dataset_ods("https://x/datasets/d", session_http=session))
+
+    def test_erreur_http_retourne_none(self):
+        session = mock.Mock()
+        r = mock.Mock()
+        r.raise_for_status = mock.Mock(side_effect=Exception("HTTP 500"))
+        session.get.return_value = r
+        self.assertIsNone(date_dataset_ods("https://x/datasets/d", session_http=session))
 
 
 if __name__ == "__main__":

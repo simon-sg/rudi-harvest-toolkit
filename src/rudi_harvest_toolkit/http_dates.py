@@ -69,4 +69,45 @@ def _parser_date_http_stricte(date_str: str | None) -> str | None:
     return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-__all__ = ["entete_derniere_modification"]
+def date_dataset_ods(
+    explore_base_url: str,
+    *,
+    session_http=None,
+    timeout: int = 15,
+) -> str | None:
+    """Date de dernière modification d'un dataset Opendatasoft (``metas.default.
+    modified``, ``GET {explore_base_url}``) — requête de métadonnées légère, pas un
+    téléchargement. Retourne ``None`` sur toute erreur réseau/HTTP ou absence du
+    champ — jamais bloquant, jamais deviné.
+
+    ``explore_base_url`` est l'URL de base du dataset, sans suffixe (ex.
+    ``.../api/explore/v2.1/catalog/datasets/{dataset_id}``, pas ``/records`` ni
+    ``/exports/...``).
+    """
+    session_http = session_http or _session_defaut
+    try:
+        reponse = session_http.get(explore_base_url, timeout=timeout)
+        reponse.raise_for_status()
+        modifie = reponse.json().get("metas", {}).get("default", {}).get("modified")
+    except Exception:  # noqa: BLE001
+        return None
+    return parser_date_iso_stricte(modifie) if modifie else None
+
+
+def parser_date_iso_stricte(date_str: str | None) -> str | None:
+    """Parseur ISO 8601 strict — ``None`` sur toute entrée absente ou non parsable,
+    **jamais une date inventée** (contrairement à ``pivot.parser_date_http``). Pour
+    une date déjà au format ISO (ex. ``last_modified`` Opendatasoft), pas un format
+    HTTP ``Last-Modified`` (voir :func:`entete_derniere_modification` pour ce cas)."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+__all__ = ["date_dataset_ods", "entete_derniere_modification", "parser_date_iso_stricte"]
