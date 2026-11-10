@@ -135,6 +135,65 @@ class TestLectureFichierLocal(unittest.TestCase):
             list(filtrer_csv(chemin, "code_insee", "35120"))
 
 
+class TestFiltragePrefixe(unittest.TestCase):
+    """DECP (Axe 4 v3) : acheteur_id est un SIRET (14 chiffres), filtré sur un SIREN
+    (9 chiffres) — prefixe=True, jamais une conversion en int (un SIRET peut
+    commencer par 0)."""
+
+    def setUp(self):
+        self._dossier = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dossier.cleanup)
+
+    def _ecrire(self, contenu, nom="f.csv"):
+        chemin = os.path.join(self._dossier.name, nom)
+        with open(chemin, "w", encoding="utf-8", newline="") as f:
+            f.write(contenu)
+        return chemin
+
+    def test_prefixe_correct(self):
+        chemin = self._ecrire(
+            "acheteur_id;montant\n"
+            "35238123400019;1000\n"
+            "35238123400027;2000\n"
+            "75100000000012;3000\n"
+        )
+        lignes = list(filtrer_csv(chemin, "acheteur_id", "352381234", prefixe=True))
+        self.assertEqual(len(lignes), 2)
+        self.assertEqual({l["montant"] for l in lignes}, {"1000", "2000"})
+
+    def test_prefixe_false_non_regresse(self):
+        chemin = self._ecrire("acheteur_id;montant\n35238123400019;1000\n")
+        self.assertEqual(list(filtrer_csv(chemin, "acheteur_id", "352381234")), [])
+        self.assertEqual(
+            len(list(filtrer_csv(chemin, "acheteur_id", "35238123400019"))), 1,
+        )
+
+    def test_valeur_avec_espaces_de_bord(self):
+        chemin = self._ecrire("acheteur_id;montant\n 35238123400019 ;1000\n")
+        lignes = list(filtrer_csv(chemin, "acheteur_id", "352381234", prefixe=True))
+        self.assertEqual(len(lignes), 1)
+
+    def test_siret_commencant_par_zero_jamais_convertit_en_entier(self):
+        chemin = self._ecrire("acheteur_id;montant\n05238123400019;1000\n")
+        lignes = list(filtrer_csv(chemin, "acheteur_id", "052381234", prefixe=True))
+        self.assertEqual(len(lignes), 1)
+
+    def test_prefixe_vide_leve(self):
+        chemin = self._ecrire("acheteur_id;montant\n35238123400019;1000\n")
+        with self.assertRaises(ValueError):
+            list(filtrer_csv(chemin, "acheteur_id", "", prefixe=True))
+
+    def test_lire_csv_filtre_memes_garanties(self):
+        chemin = self._ecrire(
+            "acheteur_id;montant\n35238123400019;1000\n75100000000012;2000\n"
+        )
+        lignes, entetes = lire_csv_filtre(chemin, "acheteur_id", "352381234", prefixe=True)
+        self.assertEqual(entetes, ["acheteur_id", "montant"])
+        self.assertEqual(lignes, [{"acheteur_id": "35238123400019", "montant": "1000"}])
+        with self.assertRaises(ValueError):
+            lire_csv_filtre(chemin, "acheteur_id", "", prefixe=True)
+
+
 class TestLectureUrl(unittest.TestCase):
     def test_url_simple(self):
         contenu = b"code;nom\n35120;Geveze\n35000;Rennes\n"

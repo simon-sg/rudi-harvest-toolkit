@@ -116,6 +116,14 @@ def _normaliser_valeur(valeur: object) -> str:
     return str(valeur).strip()
 
 
+def _correspond(valeur_ligne: object, cible: str, *, prefixe: bool) -> bool:
+    """Égalité stricte, ou préfixe si ``prefixe=True`` (ex. SIRET 14 chiffres filtré
+    sur un SIREN de 9 — jamais de conversion en ``int``, un SIRET peut commencer par
+    ``0``)."""
+    valeur = _normaliser_valeur(valeur_ligne)
+    return valeur.startswith(cible) if prefixe else valeur == cible
+
+
 class _LecteurBrut(io.RawIOBase):
     """Adaptateur ``RawIOBase`` au-dessus d'un itérateur de morceaux binaires.
 
@@ -273,17 +281,23 @@ def filtrer_csv(
     colonne: str,
     valeur: object,
     *,
+    prefixe: bool = False,
     encoding: str | None = None,
     delimiter: str | None = None,
     gzip: bool | None = None,
     session_http=None,
     timeout: int = 120,
 ) -> Iterator[dict]:
-    """Itère sur les lignes où ``colonne`` vaut exactement ``valeur`` (en flux).
+    """Itère sur les lignes où ``colonne`` vaut exactement ``valeur`` (en flux), ou
+    commence par ``valeur`` si ``prefixe=True`` (ex. SIRET filtré sur un SIREN).
 
     Le nom de colonne est résolu de façon tolérante (accents/casse/underscores).
     La valeur est comparée après ``strip()``, sans normalisation d'accents.
     """
+    if prefixe and not _normaliser_valeur(valeur):
+        raise ValueError(
+            "prefixe=True avec une valeur vide matcherait toutes les lignes du fichier."
+        )
     with _lecteur_csv(
         source,
         encoding=encoding,
@@ -295,7 +309,7 @@ def filtrer_csv(
         colonne_reelle = resoudre_colonne(entetes, colonne)
         cible = _normaliser_valeur(valeur)
         for ligne in lecteur:
-            if _normaliser_valeur(ligne.get(colonne_reelle)) == cible:
+            if _correspond(ligne.get(colonne_reelle), cible, prefixe=prefixe):
                 yield ligne
 
 
@@ -304,6 +318,7 @@ def lire_csv_filtre(
     colonne: str,
     valeur: object,
     *,
+    prefixe: bool = False,
     encoding: str | None = None,
     delimiter: str | None = None,
     gzip: bool | None = None,
@@ -314,8 +329,12 @@ def lire_csv_filtre(
 
     Même contrat de retour que ``filtrer_csv()``/``filtrer_gz()`` de
     ``moissonneuse-batteuse`` — pratique pour les connecteurs qui doivent ensuite
-    réécrire un fichier filtré.
+    réécrire un fichier filtré. ``prefixe`` : voir :func:`filtrer_csv`.
     """
+    if prefixe and not _normaliser_valeur(valeur):
+        raise ValueError(
+            "prefixe=True avec une valeur vide matcherait toutes les lignes du fichier."
+        )
     with _lecteur_csv(
         source,
         encoding=encoding,
@@ -328,6 +347,6 @@ def lire_csv_filtre(
         cible = _normaliser_valeur(valeur)
         lignes = [
             ligne for ligne in lecteur
-            if _normaliser_valeur(ligne.get(colonne_reelle)) == cible
+            if _correspond(ligne.get(colonne_reelle), cible, prefixe=prefixe)
         ]
     return lignes, entetes
