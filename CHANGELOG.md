@@ -1,6 +1,8 @@
 # Changelog
 
-## Non publié — `rne.py` (maire actuel) + enrichissement `wikipedia.py`
+## 0.3.0 — 2026-11-10
+
+### `rne.py` (maire actuel) + enrichissement `wikipedia.py`
 
 Correction post-livraison de la v3 de `rudi-commune-starterkit`, suite à un test réel
 (commune d'Acigné) :
@@ -16,7 +18,7 @@ Correction post-livraison de la v3 de `rudi-commune-starterkit`, suite à un tes
   anti-ébauches (`longueur_min`) abaissé de 250 à 80 caractères : un intro réel et
   court (ex. 192 caractères pour Acigné, 2 phrases factuelles) n'est pas une ébauche.
 
-## Non publié — nouveaux modules partagés pour la v3 de rudi-commune-starterkit
+### nouveaux modules partagés pour la v3 de rudi-commune-starterkit
 
 Code générique extrait lors de la v3 de `rudi-commune-starterkit` (voir son propre
 BACKLOG/CHANGELOG pour le contexte produit) :
@@ -41,7 +43,7 @@ BACKLOG/CHANGELOG pour le contexte produit) :
   `lire_csv_filtre()` (égalité ou préfixe sur la colonne filtrée, ex. SIRET préfixé
   par un SIREN) — lève `ValueError` si `prefixe=True` avec une valeur vide.
 
-## Non publié — `supprimer_dataset_portail()` documentée comme redondante
+### `supprimer_dataset_portail()` documentée comme redondante
 
 Suite du bug ci-dessous : une fois l'URL corrigée, le `401` est resté — pas un
 problème d'URL mais un vrai défaut d'autorisation, `supprimer_dataset_portail()`
@@ -56,7 +58,7 @@ ex. `moissonneuse-batteuse`) mais sa docstring documente maintenant cette
 redondance ; `rudi-commune-starterkit` ne l'appelle plus (voir son propre
 changelog/historique).
 
-## Non publié — fix `_token_portail()` (bug réel en conditions de production)
+### fix `_token_portail()` (bug réel en conditions de production)
 
 `_token_portail()` ne normalisait pas `url_portail` avant de construire l'URL
 `oauth2/token`, contrairement à tous les autres appels portail du fichier
@@ -71,7 +73,7 @@ de l'état local), mais bloquait tout usage réel de
 final. Voir l'entrée suivante : la cause plus profonde (401 persistant même l'URL
 corrigée) a mené à retirer l'appel portail séparé plutôt qu'à le corriger davantage.
 
-## Non publié — garde-fous organisation + idempotence suppression (rudi-commune-starterkit v2)
+### garde-fous organisation + idempotence suppression (rudi-commune-starterkit v2)
 
 Ajouts dans `rudi_client.py`, motivés par le plan v2 de `rudi-commune-starterkit`
 (registre de communes, garde-fou organisation, « vider une commune ») :
