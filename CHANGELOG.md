@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (en cours — Axe 5 de rudi-commune-starterkit, incrément A)
+## 0.5.0 — 2026-11-11 (Axe 5 de rudi-commune-starterkit, incréments A/B/C)
 
 ### `tabular.lire_parquet_filtre()` + dépendance `pyarrow` obligatoire
 
