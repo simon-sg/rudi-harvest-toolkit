@@ -73,12 +73,23 @@ def noeud_pret(conf: dict) -> bool:
     (catalogPubUrl, storagePubUrl, backPath). Un simple GET sur la racine ne suffit pas :
     juste après un `podman start`, la racine répond déjà 200 alors que `/manager/conf`
     renvoie encore 500 pendant ~20 s, et toute publication lancée dans cet intervalle
-    échoue sur « This node version is not compatible with this object »."""
+    échoue sur « This node version is not compatible with this object ».
+
+    N'envoie jamais `usr`/`pwd` (ce test ne vérifie que la joignabilité, jamais les
+    identifiants, malgré ce que les messages d'appel laissaient croire jusqu'ici — voir
+    les appelants dans rudi-commune-starterkit). Affiche le détail réel de l'échec
+    (exception ou code HTTP) plutôt que de le faire disparaître dans le simple booléen
+    retourné — sans ça, un DNS cassé, un certificat TLS non reconnu, un timeout et un
+    nœud qui répond 500 étaient tous indistinguables pour qui lisait la sortie."""
+    url = conf["url"].rstrip("/") + "/manager/conf"
     try:
-        r = session.get(conf["url"].rstrip("/") + "/manager/conf", timeout=5)
-        return r.status_code == 200
-    except Exception:
+        r = session.get(url, timeout=5)
+    except Exception as e:  # noqa: BLE001 - diagnostic volontairement générique
+        print(f"  [RUDI] Impossible de contacter {url} : {type(e).__name__}: {e}")
         return False
+    if r.status_code != 200:
+        print(f"  [RUDI] {url} a répondu {r.status_code} (attendu 200).")
+    return r.status_code == 200
 
 
 def url_catalog(conf: dict) -> str:
