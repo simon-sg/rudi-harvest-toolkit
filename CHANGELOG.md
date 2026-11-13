@@ -1,5 +1,28 @@
 # Changelog
 
+## Non publié
+
+### `rudi_client.demander_creation_organisation()` — `organization_id` déterministe
+
+Corrige un doublon d'organisation observé en conditions réelles (nœud de démo RM,
+2026-11-13) : l'`organization_id` envoyé au nœud était tiré aléatoirement
+(`uuid.uuid4()`) à chaque appel — un échec ambigu suivi d'un nouvel essai pouvait
+créer une 2e organisation distincte pour la même commune si le nœud n'avait pas fini
+d'indexer la première. Désormais dérivé de `uuid.uuid5(namespace fixe, nom
+normalisé)` — une 2e tentative vise la même ressource (contrainte d'unicité côté
+nœud, confirmée dans son schéma Mongoose) au lieu d'en créer une 2e. Nouvelle
+`rudi_client.organisation_par_id()` : récupération explicite par cet id si la
+création échoue, pour ne pas perdre le lien dès ce run.
+
+### `download_cache.telecharger()` — retry sur coupure réseau en cours de flux
+
+Une coupure **en cours de flux** (`ConnectionError`/`ChunkedEncodingError`,
+« Connection broken », observée sur le téléchargement national DVF de 609 Mo de
+`rudi-commune-starterkit`) ne déclenchait aucune reprise — seules les erreurs avant
+réception de la réponse HTTP (429/5xx) étaient retentées ailleurs. Jusqu'à 3
+tentatives désormais, chacune reprenant le téléchargement depuis le début (pas de
+`Range`/reprise partielle) — bénéficie à tous les appelants du toolkit.
+
 ## 0.5.0 — 2026-11-11 (Axe 5 de rudi-commune-starterkit, incréments A/B/C)
 
 ### `tabular.lire_parquet_filtre()` + dépendance `pyarrow` obligatoire
