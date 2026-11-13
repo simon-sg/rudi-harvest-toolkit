@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import requests
+
 from rudi_harvest_toolkit.rudi_client import (
     _api_version,
     _dedoublonner_medias_file,
@@ -16,10 +18,12 @@ from rudi_harvest_toolkit.rudi_client import (
     demander_detachement_producteur,
     demander_mise_a_jour_organisation,
     demander_suppression_organisation,
+    desactiver_verification_tls,
     email_par_defaut,
     global_id_pour_local_id,
     lister_organisations,
     marquer_organisations_traitees,
+    noeud_pret,
     organisation_par_nom,
     organisations_nouvellement_validees,
     renvoyer_ressources_connues,
@@ -70,6 +74,50 @@ class TestApiVersion(unittest.TestCase):
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.get.side_effect = ConnectionError("refusée")
             self.assertEqual(_api_version(conf), "1.4.0")
+
+
+class TestNoeudPret(unittest.TestCase):
+    def test_reponse_200_pret(self):
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = mock.Mock(status_code=200)
+            self.assertTrue(noeud_pret(conf))
+
+    def test_reponse_non_200_pas_pret_sans_exception_sortie(self):
+        conf = {"url": "http://localhost:4032"}
+        erreur = {}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = mock.Mock(status_code=404)
+            self.assertFalse(noeud_pret(conf, erreur_sortie=erreur))
+        # Pas une exception : rien à distinguer pour l'appelant (ex. pas de
+        # proposition d'ignorer la vérification TLS, qui n'aurait aucun sens ici).
+        self.assertNotIn("exception", erreur)
+
+    def test_exception_reseau_remontee_dans_erreur_sortie(self):
+        conf = {"url": "http://localhost:4032"}
+        erreur = {}
+        exc = requests.exceptions.ConnectionError("DNS cassé")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = exc
+            self.assertFalse(noeud_pret(conf, erreur_sortie=erreur))
+        self.assertIs(erreur["exception"], exc)
+
+    def test_erreur_sortie_optionnel(self):
+        # Ne doit jamais planter si l'appelant ne fournit pas erreur_sortie (valeur
+        # par défaut None) — tous les appelants existants avant ce changement.
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = requests.exceptions.SSLError("certificat auto-signé")
+            self.assertFalse(noeud_pret(conf))
+
+
+class TestDesactiverVerificationTls(unittest.TestCase):
+    def test_desactive_la_verification_sur_la_session_partagee(self):
+        with mock.patch("rudi_harvest_toolkit.http.session") as sess, \
+                mock.patch("rudi_harvest_toolkit.http.urllib3.disable_warnings") as avertir:
+            desactiver_verification_tls()
+            self.assertFalse(sess.verify)
+            avertir.assert_called_once()
 
 
 class TestEmailParDefaut(unittest.TestCase):

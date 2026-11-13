@@ -21,7 +21,7 @@ from rudi_node_write.connectors.rudi_node_auth import RudiNodeAuth
 from rudi_node_write.rudi_types.rudi_media import RudiMediaFile
 from rudi_node_write.rudi_types.rudi_meta import RudiMetadata
 
-from .http import session
+from .http import desactiver_verification_tls, session
 from .tabular import normaliser_nom_colonne
 
 
@@ -66,7 +66,7 @@ def charger_conf_rudi(chemin: str) -> dict | None:
         return json.load(f)
 
 
-def noeud_pret(conf: dict) -> bool:
+def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
     """Vérifie que le nœud est vraiment exploitable, pas seulement qu'il écoute.
 
     On sonde `/manager/conf` — l'endpoint que la lib de publication interroge en premier
@@ -80,12 +80,20 @@ def noeud_pret(conf: dict) -> bool:
     les appelants dans rudi-commune-starterkit). Affiche le détail réel de l'échec
     (exception ou code HTTP) plutôt que de le faire disparaître dans le simple booléen
     retourné — sans ça, un DNS cassé, un certificat TLS non reconnu, un timeout et un
-    nœud qui répond 500 étaient tous indistinguables pour qui lisait la sortie."""
+    nœud qui répond 500 étaient tous indistinguables pour qui lisait la sortie.
+
+    ``erreur_sortie``, si fourni, reçoit l'exception levée (``erreur_sortie["exception"]``)
+    en cas d'échec réseau — permet à l'appelant de distinguer un certificat TLS non
+    reconnu (``requests.exceptions.SSLError``) d'un autre échec, pour éventuellement
+    proposer de continuer sans vérification TLS (jamais par défaut). Absent en cas
+    d'échec sur un code HTTP != 200 (pas une exception)."""
     url = conf["url"].rstrip("/") + "/manager/conf"
     try:
         r = session.get(url, timeout=5)
     except Exception as e:  # noqa: BLE001 - diagnostic volontairement générique
         print(f"  [RUDI] Impossible de contacter {url} : {type(e).__name__}: {e}")
+        if erreur_sortie is not None:
+            erreur_sortie["exception"] = e
         return False
     if r.status_code != 200:
         print(f"  [RUDI] {url} a répondu {r.status_code} (attendu 200).")

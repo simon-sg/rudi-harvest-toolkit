@@ -1,3 +1,4 @@
+import urllib3
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -32,3 +33,16 @@ session.headers["User-Agent"] = (
     "rudi-harvest-toolkit/0.1.0 "
     "(https://github.com/anomalyco/rudi-harvest-toolkit; contact@example.org)"
 )
+
+
+def desactiver_verification_tls() -> None:
+    """Désactive la vérification du certificat TLS pour le reste du run (session
+    partagée par tous les connecteurs — pas de retour en arrière possible sans
+    relancer le processus).
+
+    Risque réel : une attaque de l'ordinateur au milieu pourrait alors intercepter
+    identifiants et données sans que rien ne le signale. À n'appeler qu'après une
+    confirmation explicite de l'utilisateur final (voir les appelants dans
+    rudi-commune-starterkit) — jamais par défaut, jamais sans confirmation."""
+    session.verify = False
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
