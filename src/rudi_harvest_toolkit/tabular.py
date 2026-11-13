@@ -368,11 +368,20 @@ def lire_parquet_filtre(
     interne même si absente de ``colonnes`` (nécessaire pour filtrer), mais n'apparaît
     dans les lignes/en-têtes retournés que si explicitement demandée.
 
-    Comparaison déléguée à :func:`_correspond` (jamais un filtre ``pyarrow`` natif
-    typé, qui ferait échouer silencieusement un ``"35120"`` contre une colonne
-    entière). Colonne absente : lève :class:`ColonneIntrouvableError`. Valeurs : types
+    Lecture et filtrage **par lot** (``ParquetFile.iter_batches()``), jamais le
+    fichier entier matérialisé en objets Python d'un coup — correctif du
+    2026-11-13 (voir memory ``project_fuite_memoire_lire_parquet_filtre``) : la
+    version précédente faisait ``.read()`` + ``.to_pydict()`` sur tout le fichier
+    avant de filtrer, ~9 Go RSS observés sur le jeu national des élections pour une
+    seule commune. Le filtre lui-même reste équivalent à :func:`_correspond`
+    (``cast`` en string + trim, jamais un ``pyarrow`` typé natif qui ferait échouer
+    silencieusement un ``"35120"`` contre une colonne entière — seule la
+    *comparaison* est maintenant faite côté Arrow, pas la matérialisation). Colonne
+    absente : lève :class:`ColonneIntrouvableError`. Valeurs retournées : types
     Python natifs (jamais des scalaires ``numpy``, qui casseraient silencieusement
     ``csv.DictWriter``)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.parquet as pq
 
     fichier = pq.ParquetFile(chemin)
@@ -390,13 +399,21 @@ def lire_parquet_filtre(
             projection = projection + [colonne_reelle]
         entetes_retour = list(colonnes)
 
-    table = fichier.read(columns=projection)
-    pydict = table.to_pydict()
-    noms_lignes = [n for n in table.column_names if not (colonne_ajoutee and n == colonne_reelle)]
     cible = _normaliser_valeur(valeur)
+    lignes: list[dict] = []
+    noms_lignes: list[str] = []
+    premier_lot = True
 
-    lignes = []
-    for i in range(table.num_rows):
-        if _correspond(pydict[colonne_reelle][i], cible, prefixe=False):
+    for lot in fichier.iter_batches(columns=projection):
+        if premier_lot:
+            noms_lignes = [n for n in lot.column_names
+                            if not (colonne_ajoutee and n == colonne_reelle)]
+            premier_lot = False
+        comparaison = pc.utf8_trim_whitespace(pc.cast(lot.column(colonne_reelle), pa.string()))
+        lot_filtre = lot.filter(pc.equal(comparaison, cible))
+        if lot_filtre.num_rows == 0:
+            continue
+        pydict = lot_filtre.select(noms_lignes).to_pydict()
+        for i in range(lot_filtre.num_rows):
             lignes.append({nom: pydict[nom][i] for nom in noms_lignes})
     return lignes, entetes_retour

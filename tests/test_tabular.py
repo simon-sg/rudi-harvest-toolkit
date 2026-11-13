@@ -284,6 +284,36 @@ class TestLireParquetFiltre(unittest.TestCase):
         self.assertEqual(len(lignes), 1)
         self.assertEqual(lignes[0]["nom"], "Rennes")
 
+    def test_colonne_de_filtrage_entiere_matchee_sur_valeur_string(self):
+        """Régression du 2026-11-13 : la colonne de filtrage peut être un entier
+        natif côté Parquet (pas toujours une string) — le cast+trim côté pyarrow
+        doit rester transparent, comme l'ancienne comparaison Python _correspond()."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        chemin = os.path.join(self._tmp.name, "entier.parquet")
+        table = pa.table({"code_commune": [35120, 35238], "nom": ["Gévezé", "Rennes"]})
+        pq.write_table(table, chemin)
+        lignes, _ = lire_parquet_filtre(chemin, "code_commune", " 35120 ")
+        # Le match réussit malgré le typage entier + les espaces de la valeur
+        # cherchée ; la valeur retournée garde son type natif (jamais stringifiée).
+        self.assertEqual(lignes, [{"code_commune": 35120, "nom": "Gévezé"}])
+
+    def test_filtrage_traverse_plusieurs_lots(self):
+        """Un fichier écrit avec plusieurs row-groups doit être filtré correctement
+        sur l'ensemble des lots, pas seulement le premier (vérifie iter_batches())."""
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        chemin = os.path.join(self._tmp.name, "multi_lots.parquet")
+        table = pa.table({
+            "code_commune": ["99999"] * 500 + ["35120"] + ["99999"] * 500,
+            "nom": ["autre"] * 500 + ["Gévezé"] + ["autre"] * 500,
+        })
+        pq.write_table(table, chemin, row_group_size=200)
+        lignes, _ = lire_parquet_filtre(chemin, "code_commune", "35120")
+        self.assertEqual(lignes, [{"code_commune": "35120", "nom": "Gévezé"}])
+
 
 if __name__ == "__main__":
     unittest.main()
