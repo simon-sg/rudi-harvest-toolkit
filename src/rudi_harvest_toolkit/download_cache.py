@@ -19,11 +19,23 @@ import datetime
 import hashlib
 import os
 import time
+
+import requests
+
 from .http import session
 
 TTL_JOURS_DEFAUT = 30
 _TAILLE_MORCEAU = 1024 * 1024
 _ENV_CACHE = "RUDI_HARVEST_CACHE"
+# Backlog rudi-commune-starterkit (fragilité #3, 2026-11-13) : une coupure réseau
+# EN COURS de flux (ConnectionError/ChunkedEncodingError, « Connection broken »,
+# observée en conditions réelles sur le téléchargement national DVF de 609 Mo) ne
+# déclenchait aucune reprise — seules les erreurs avant réception de la réponse HTTP
+# (429/5xx) étaient retentées ailleurs. Reprend depuis le début (pas de Range/resume :
+# demanderait de vérifier le support serveur + un ETag pour éviter de reprendre sur un
+# fichier changé entre-temps — hors scope ici, fonction partagée par ~10 modules).
+_MAX_TENTATIVES_FLUX = 3
+_PAUSE_ENTRE_TENTATIVES_S = 2
 
 
 class ErreurTelechargement(RuntimeError):
@@ -73,6 +85,11 @@ def telecharger(
 
     Lève :class:`ErreurTelechargement` sur échec réseau/HTTP, après nettoyage du
     fichier temporaire. Aucune requête conditionnelle n'est envoyée.
+
+    Une coupure réseau **en cours de flux** (``ConnectionError``/
+    ``ChunkedEncodingError``, pas seulement un statut HTTP 429/5xx avant réception
+    de la réponse) déclenche jusqu'à :data:`_MAX_TENTATIVES_FLUX` tentatives — chacune
+    reprend le téléchargement depuis le début (pas de ``Range``/reprise partielle).
     """
     chemin = chemin_cache(url, dossier)
     if os.path.exists(chemin):
@@ -87,38 +104,56 @@ def telecharger(
 
     os.makedirs(os.path.dirname(chemin), exist_ok=True)
     session_http = session_http or session
-    try:
-        reponse = session_http.get(url, stream=True, timeout=timeout)
-        reponse.raise_for_status()
-    except Exception as e:
-        raise ErreurTelechargement(f"Échec du téléchargement de {url} : {e}") from e
-
     chemin_tmp = chemin + ".tmp"
-    total = 0
-    try:
-        with open(chemin_tmp, "wb") as fichier:
-            for morceau in reponse.iter_content(chunk_size=_TAILLE_MORCEAU):
-                if not morceau:
-                    continue
-                fichier.write(morceau)
-                total += len(morceau)
-                if verbose:
-                    print(f"  {total / 1024 / 1024:.1f} Mo…", end="\r")
-                if plafond_mo is not None and total >= plafond_mo * 1024 * 1024:
-                    if verbose:
-                        print(f"\n  Plafond {plafond_mo} Mo atteint — fichier partiel.")
-                    break
-        os.replace(chemin_tmp, chemin)
-    except Exception as e:
+
+    for tentative in range(1, _MAX_TENTATIVES_FLUX + 1):
         try:
-            os.remove(chemin_tmp)
-        except OSError:
-            pass
-        raise ErreurTelechargement(f"Échec de l'écriture du cache pour {url} : {e}") from e
-    finally:
-        fermer = getattr(reponse, "close", None)
-        if callable(fermer):
-            fermer()
+            reponse = session_http.get(url, stream=True, timeout=timeout)
+            reponse.raise_for_status()
+        except Exception as e:
+            raise ErreurTelechargement(f"Échec du téléchargement de {url} : {e}") from e
+
+        total = 0
+        try:
+            with open(chemin_tmp, "wb") as fichier:
+                for morceau in reponse.iter_content(chunk_size=_TAILLE_MORCEAU):
+                    if not morceau:
+                        continue
+                    fichier.write(morceau)
+                    total += len(morceau)
+                    if verbose:
+                        print(f"  {total / 1024 / 1024:.1f} Mo…", end="\r")
+                    if plafond_mo is not None and total >= plafond_mo * 1024 * 1024:
+                        if verbose:
+                            print(f"\n  Plafond {plafond_mo} Mo atteint — fichier partiel.")
+                        break
+            os.replace(chemin_tmp, chemin)
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
+            try:
+                os.remove(chemin_tmp)
+            except OSError:
+                pass
+            if tentative < _MAX_TENTATIVES_FLUX:
+                if verbose:
+                    print(f"\n  Connexion coupée en cours de flux ({e}) — nouvelle "
+                          f"tentative ({tentative + 1}/{_MAX_TENTATIVES_FLUX})…")
+                time.sleep(_PAUSE_ENTRE_TENTATIVES_S)
+                continue
+            raise ErreurTelechargement(
+                f"Échec du téléchargement de {url} après {_MAX_TENTATIVES_FLUX} "
+                f"tentatives (connexion coupée en cours de flux à chaque fois) : {e}"
+            ) from e
+        except Exception as e:
+            try:
+                os.remove(chemin_tmp)
+            except OSError:
+                pass
+            raise ErreurTelechargement(f"Échec de l'écriture du cache pour {url} : {e}") from e
+        finally:
+            fermer = getattr(reponse, "close", None)
+            if callable(fermer):
+                fermer()
+        break  # succès — pas besoin d'une autre tentative
 
     if verbose:
         print(f"\n  Téléchargé : {chemin} ({total / 1024 / 1024:.1f} Mo)")

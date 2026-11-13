@@ -5,6 +5,8 @@ import time
 import unittest
 from unittest import mock
 
+import requests
+
 from rudi_harvest_toolkit.download_cache import (
     ErreurTelechargement,
     chemin_cache,
@@ -140,6 +142,61 @@ class TestTelecharger(unittest.TestCase):
             telecharger("https://exemple.fr/x.csv", dossier=self.dossier, session_http=session)
 
         chemin = chemin_cache("https://exemple.fr/x.csv", self.dossier)
+        self.assertFalse(os.path.exists(chemin + ".tmp"))
+        self.assertFalse(os.path.exists(chemin))
+        session.get.assert_called_once()  # pas de retry sur une erreur d'écriture locale
+
+    def test_connexion_coupee_en_cours_de_flux_relance_la_tentative(self):
+        """Backlog rudi-commune-starterkit, fragilité #3 (2026-11-13) : une coupure
+        réseau EN COURS de flux (pas seulement un statut HTTP avant réception de la
+        réponse) doit relancer le téléchargement depuis le début plutôt que
+        d'abandonner directement."""
+        session = mock.Mock()
+        reponse = mock.Mock()
+        reponse.raise_for_status = mock.Mock()
+        reponse.close = mock.Mock()
+
+        def _flux_casse():
+            yield b"abc"
+            raise requests.exceptions.ConnectionError("Connection broken")
+
+        reponse.iter_content.side_effect = [_flux_casse(), iter([b"def"])]
+        session.get.return_value = reponse
+
+        with mock.patch("rudi_harvest_toolkit.download_cache.time.sleep"):
+            chemin = telecharger(
+                "https://exemple.fr/gros.csv", dossier=self.dossier, session_http=session,
+            )
+
+        with open(chemin, "rb") as f:
+            # Pas de reprise partielle (pas de Range) : la tentative ratée ("abc")
+            # est entièrement jetée, seule la tentative réussie compte.
+            self.assertEqual(f.read(), b"def")
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_connexion_coupee_a_chaque_tentative_leve_apres_le_maximum(self):
+        session = mock.Mock()
+        reponse = mock.Mock()
+        reponse.raise_for_status = mock.Mock()
+        reponse.close = mock.Mock()
+
+        def _toujours_casse(**_kwargs):
+            def generateur():
+                yield b"abc"
+                raise requests.exceptions.ChunkedEncodingError("Connection broken")
+            return generateur()
+
+        reponse.iter_content.side_effect = _toujours_casse
+        session.get.return_value = reponse
+
+        with mock.patch("rudi_harvest_toolkit.download_cache.time.sleep"):
+            with self.assertRaises(ErreurTelechargement):
+                telecharger(
+                    "https://exemple.fr/gros.csv", dossier=self.dossier, session_http=session,
+                )
+
+        self.assertEqual(session.get.call_count, 3)  # _MAX_TENTATIVES_FLUX
+        chemin = chemin_cache("https://exemple.fr/gros.csv", self.dossier)
         self.assertFalse(os.path.exists(chemin + ".tmp"))
         self.assertFalse(os.path.exists(chemin))
 
