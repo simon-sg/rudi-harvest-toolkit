@@ -11,6 +11,7 @@ from rudi_harvest_toolkit.rudi_client import (
     _api_version,
     _dedoublonner_medias_file,
     _media_file_deja_complet,
+    _organization_id_deterministe,
     _token_portail,
     charger_conf_rudi,
     demander_archivage_organisation,
@@ -24,6 +25,7 @@ from rudi_harvest_toolkit.rudi_client import (
     lister_organisations,
     marquer_organisations_traitees,
     noeud_pret,
+    organisation_par_id,
     organisation_par_nom,
     organisations_nouvellement_validees,
     renvoyer_ressources_connues,
@@ -248,6 +250,37 @@ class TestOrganisationParNom(unittest.TestCase):
             sess.get.return_value = reponse
             resultat = organisation_par_nom(self._CONF, "Commune de Gévezé")
         self.assertNotIn("organization_status", resultat)
+
+
+class TestOrganisationParId(unittest.TestCase):
+    _CONF = {"url": "http://n:3032", "usr": "u", "pwd": "p", "url_catalog": "http://n:3030/catalog"}
+
+    def test_trouvee_par_id_exact(self):
+        orgs = [
+            {"organization_id": "org-1", "organization_name": "Commune de Gévezé"},
+            {"organization_id": "org-2", "organization_name": "Commune de Pacé"},
+        ]
+        reponse = mock.Mock()
+        reponse.json.return_value = orgs
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            resultat = organisation_par_id(self._CONF, "org-2")
+        self.assertEqual(resultat, orgs[1])
+
+    def test_absente_retourne_none(self):
+        reponse = mock.Mock()
+        reponse.json.return_value = [{"organization_id": "org-1"}]
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertIsNone(organisation_par_id(self._CONF, "org-inconnu"))
+
+    def test_erreur_reseau_propagee(self):
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = ConnectionError("refusée")
+            with self.assertRaises(ConnectionError):
+                organisation_par_id(self._CONF, "org-1")
 
 
 class TestOrganisationsNouvellementValidees(unittest.TestCase):
@@ -563,6 +596,67 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
             creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
             resultat = demander_creation_organisation(conf, self.ORG)
         self.assertEqual(resultat, "uuid-noeud")
+
+    def test_organization_id_envoye_est_deterministe(self):
+        """2026-11-13 : l'id envoyé au nœud n'est plus un uuid4 aléatoire mais dérivé
+        du nom — identique à chaque appel pour le même nom, pour qu'une 2e tentative
+        (après un échec ambigu, ou avant que le nœud ait fini d'indexer la 1ère) vise
+        la même ressource plutôt que d'en créer une 2e distincte (voir backlog :
+        doublon observé en conditions réelles sur le nœud de démo RM)."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
+            creer.return_value.connector.request.return_value = {"organization_id": "uuid-noeud"}
+            demander_creation_organisation(conf, self.ORG)
+            demander_creation_organisation(conf, self.ORG)
+        corps_appel_1 = creer.return_value.connector.request.call_args_list[0][1]["body"]
+        corps_appel_2 = creer.return_value.connector.request.call_args_list[1][1]["body"]
+        self.assertEqual(corps_appel_1["organization_id"], corps_appel_2["organization_id"])
+        self.assertEqual(
+            corps_appel_1["organization_id"],
+            _organization_id_deterministe(self.ORG["organization_name"]),
+        )
+
+    def test_doublon_recupere_explicitement_apres_echec_creation(self):
+        """Le nœud refuse la recréation (contrainte d'unicité sur organization_id,
+        vérifiée dans le schéma Mongoose du nœud) parce que l'organisation a déjà été
+        créée par une tentative précédente avec le même id déterministe — on la
+        retrouve explicitement par cet id plutôt que d'abandonner, pour ne pas perdre
+        le lien dès ce run."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        org_id_attendu = _organization_id_deterministe(self.ORG["organization_name"])
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.organisation_par_id") as par_id:
+            creer.return_value.connector.request.side_effect = Exception(
+                "400 organization_id already exists")
+            par_id.return_value = {"organization_id": org_id_attendu,
+                                    "organization_name": self.ORG["organization_name"]}
+            resultat = demander_creation_organisation(conf, self.ORG)
+        self.assertEqual(resultat, org_id_attendu)
+        par_id.assert_called_once_with(conf, org_id_attendu)
+
+    def test_echec_creation_sans_organisation_existante_retourne_none(self):
+        """La récupération explicite ne doit pas masquer un vrai échec (nœud
+        injoignable, portail en panne...) : si l'organisation n'est pas retrouvée par
+        son id déterministe non plus, le comportement best-effort existant (None,
+        jamais d'exception) est inchangé."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.organisation_par_id") as par_id:
+            creer.return_value.connector.request.side_effect = Exception("503 catalog unreachable")
+            par_id.return_value = None
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+
+    def test_echec_de_la_recuperation_elle_meme_ne_leve_pas(self):
+        """Si organisation_par_id() échoue à son tour (nœud injoignable pour de bon),
+        la fonction reste best-effort : pas d'exception propagée, retourne None comme
+        avant ce correctif."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.organisation_par_id") as par_id:
+            creer.return_value.connector.request.side_effect = Exception("503 catalog unreachable")
+            par_id.side_effect = ConnectionError("injoignable")
+            self.assertIsNone(demander_creation_organisation(conf, self.ORG))
+
 
 class TestDemanderMiseAJourOrganisation(unittest.TestCase):
     ORG = {"organization_id": "uuid-portail", "organization_name": "MyDataBall",

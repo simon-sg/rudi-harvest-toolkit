@@ -245,6 +245,25 @@ def organisation_par_nom(conf: dict, organization_name: str) -> dict | None:
     return None
 
 
+def organisation_par_id(conf: dict, organization_id: str) -> dict | None:
+    """Cherche une organisation par ``organization_id`` exact, même mécanisme HTTP que
+    :func:`organisation_par_nom` (``GET {url_catalog}/v1/organizations``, filtrage
+    client — pas de route ``GET .../organizations/:id`` exposée côté nœud pour ce type
+    d'objet). Utilisée par :func:`demander_creation_organisation` pour récupérer
+    explicitement une organisation déjà créée par une tentative précédente (id
+    déterministe, voir ``_organization_id_deterministe``) quand le nœud refuse une
+    recréation en doublon (contrainte d'unicité sur ``organization_id``).
+
+    Retourne le dict complet si trouvée, ``None`` sinon. Erreurs réseau/HTTP propagées
+    (jamais avalées), comme :func:`organisation_par_nom`."""
+    reponse = session.get(f"{url_catalog(conf)}/v1/organizations", timeout=30)
+    reponse.raise_for_status()
+    for organisation in reponse.json():
+        if organisation.get("organization_id") == organization_id:
+            return organisation
+    return None
+
+
 def organisations_nouvellement_validees(conf: dict, chemin_etat: str) -> list[str]:
     """Organisations dont le rapport portail (``organization_status=VALIDATED``, reçu
     par le nœud quand un humain valide dans l'UI Strukture) n'a pas encore été vu lors
@@ -382,6 +401,27 @@ def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
     return r.json()["access_token"]
 
 
+# Namespace fixe pour l'UUID5 ci-dessous — valeur arbitraire, générée une seule fois
+# (2026-11-13). Ne JAMAIS la changer : elle fait partie de la clé d'identité de toute
+# organisation déjà créée par cette fonction ; un changement romprait l'idempotence
+# pour les organisations existantes (une nouvelle tentative calculerait un id
+# différent de celui déjà présent sur le nœud, recréant le doublon qu'on évite ici).
+_NAMESPACE_ORGANISATION_RUDI = uuid.UUID("7f044f03-4c6f-4df8-b56e-977a6209081b")
+
+
+def _organization_id_deterministe(organization_name: str) -> str:
+    """UUID5 dérivé du nom normalisé de l'organisation — déterministe (même nom, même
+    id à chaque appel), pour qu'une 2e tentative de création (après un échec ambigu,
+    ou avant que le nœud ait fini d'indexer la première) vise la MÊME ressource au
+    lieu d'en créer une 2e distincte avec un id aléatoire. Le nom est la clé de
+    dédoublonnage déjà utilisée ailleurs (``resolution_noeud.rapprocher_organisation``),
+    donc la cohérence avec ce mécanisme existant est volontaire.
+
+    Pas basé sur un UUID aléatoire (contrairement à l'id d'une ressource/média) :
+    c'est précisément le point — voir ``demander_creation_organisation``."""
+    return str(uuid.uuid5(_NAMESPACE_ORGANISATION_RUDI, normaliser_nom_colonne(organization_name)))
+
+
 def demander_creation_organisation(conf: dict, organization: dict) -> str | None:
     """Demande la création d'une nouvelle organisation productrice — **via le NŒUD**
     (``POST {url_catalog}/organizations``, authentification nœud normale, celle déjà
@@ -442,6 +482,15 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     a donc jamais d'organisation qui existe sur le nœud sans avoir été relayée. Pas besoin
     de vérification/rollback après coup pour ce cas.
     """
+    org_name = organization.get("organization_name", "")
+    # Déterministe depuis le 2026-11-13 (plus uuid.uuid4()) : évite qu'une 2e tentative
+    # (après un échec ambigu, ou avant que le nœud ait fini d'indexer la 1ère création —
+    # observé en conditions réelles sur le nœud de démo RM) crée une organisation en
+    # doublon. Le nœud porte une contrainte d'unicité sur organization_id (confirmé
+    # dans le code source du nœud, schéma Mongoose) : une 2e tentative avec le même id
+    # échoue proprement (voir le except ci-dessous, qui tente alors une récupération
+    # explicite) plutôt que de réussir en créant un 2e enregistrement distinct.
+    org_id_attendu = _organization_id_deterministe(org_name)
     try:
         writer = _creer_writer(conf)
         # Requis par le nœud (constaté le 2026-10-15 contre RM : 400 « La propriété
@@ -449,8 +498,7 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
         # du 2026-10-14, donc une évolution de validation côté nœud, pas un oubli
         # initial). Le nœud accepte et renvoie cet id tel quel (pas de réassignation
         # observée à cette étape, contrairement à l'ancienne route portail directe).
-        corps = {"organization_id": str(uuid.uuid4()),
-                 "organization_name": organization.get("organization_name", "")}
+        corps = {"organization_id": org_id_attendu, "organization_name": org_name}
         if organization.get("organization_summary"):
             corps["organization_summary"] = organization["organization_summary"]
         if organization.get("organization_url"):
@@ -462,11 +510,27 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
         if not org_id:
             print(f"  [RUDI] AVERTISSEMENT : création d'organisation sur le nœud sans organization_id en retour : {resultat}")
             return None
-        print(f"  [RUDI] organisation « {corps['organization_name']} » créée sur le nœud "
+        print(f"  [RUDI] organisation « {org_name} » créée sur le nœud "
               f"(uuid={org_id}, statut={resultat.get('organization_status')}) — relais portail "
               f"synchrone déjà effectué (voir docstring).")
         return org_id
     except Exception as e:
+        # Échec de création : peut être un vrai échec (nœud injoignable, portail en
+        # panne...), ou le signe que cette organisation existe déjà (conflit d'id
+        # déterministe sur une tentative précédente — succès serveur dont la réponse a
+        # été perdue, ou création concurrente pas encore visible par
+        # resolution_noeud.rapprocher_organisation au moment de l'appel). On tente une
+        # récupération explicite par l'id déterministe avant d'abandonner, pour ne pas
+        # perdre le lien dès ce run si l'organisation est bien déjà là.
+        try:
+            deja_creee = organisation_par_id(conf, org_id_attendu)
+        except Exception:
+            deja_creee = None
+        if deja_creee:
+            print(f"  [RUDI] organisation « {org_name} » déjà créée (tentative précédente, "
+                  f"id déterministe retrouvé) — pas de doublon, réutilisation de "
+                  f"uuid={org_id_attendu}.")
+            return org_id_attendu
         print(f"  [RUDI] AVERTISSEMENT : échec de la création d'organisation sur le nœud : {e}")
         return None
 
