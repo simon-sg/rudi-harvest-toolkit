@@ -1,6 +1,6 @@
 # Changelog
 
-## Non publié
+## 0.5.4 — 2026-11-14
 
 ### `rudi_client._api_version()` — mise en cache par URL catalog
 
