@@ -1,5 +1,16 @@
 # Changelog
 
+## Non publié
+
+### `rudi_client.publier_dataset()` — un upload en échec persistant ne doit plus être écarté silencieusement
+
+Un « time exceeded » encore présent après la 2e tentative était traité comme le cas
+(volontaire) « too big to be uploaded » : le média était écarté, le reste du dataset
+publié, et le hash d'état enregistrait le run comme réussi — perte de données
+silencieuse et permanente pour un JDD mono-fichier. Seul un dépassement de taille du
+nœud (politique connue) justifie de continuer sans ce média ; toute autre erreur
+persistante lève désormais une exception.
+
 ## 0.5.5 — 2026-11-14 (revue de code, phase 1 + phase 2)
 
 ### `http._retry` — ne retente plus les POST sur 5xx transitoire

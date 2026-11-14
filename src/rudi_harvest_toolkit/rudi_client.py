@@ -1405,13 +1405,21 @@ def publier_dataset(
                     raise
 
         if derniere_erreur is not None:
-            if "too big to be uploaded" in str(derniere_erreur):
-                taille_mo = os.path.getsize(chemin) / 1_048_576
-                print(f"  [RUDI] {nom} ({taille_mo:.0f} Mo) dépasse la limite de taille du "
-                      f"nœud — média écarté, le reste du dataset est publié quand même.")
-            else:
-                print(f"  [RUDI] {nom} : échec de commit persistant ({derniere_erreur}) — "
-                      f"média écarté, le reste du dataset est publié quand même.")
+            if "too big to be uploaded" not in str(derniere_erreur):
+                # Bug réel corrigé le 2026-11-14 : un « time exceeded » encore présent
+                # après la 2e tentative était jusqu'ici lui aussi « écarté » comme le cas
+                # (volontaire) « too big to be uploaded » — le dataset était publié
+                # incomplet et le hash d'état l'enregistrait comme réussi, perdant le
+                # média sans que personne ne le remarque. Seul un dépassement de taille
+                # du nœud (politique connue, pas un aléa) justifie de continuer sans ce
+                # média : tout le reste doit faire échouer la publication.
+                raise RuntimeError(
+                    f"Échec de commit persistant pour {nom} après 2 tentatives : "
+                    f"{derniere_erreur}"
+                ) from derniere_erreur
+            taille_mo = os.path.getsize(chemin) / 1_048_576
+            print(f"  [RUDI] {nom} ({taille_mo:.0f} Mo) dépasse la limite de taille du "
+                  f"nœud — média écarté, le reste du dataset est publié quand même.")
             noms_ecartes.add(nom)
             continue
         # Remplace le media dict par celui retourné (contient file_type, file_size, checksum…)
