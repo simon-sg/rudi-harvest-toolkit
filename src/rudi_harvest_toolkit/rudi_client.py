@@ -972,6 +972,14 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
         return False
 
 
+class EtatPortailIndisponibleError(RuntimeError):
+    """L'état de l'organisation côté portail n'a pas pu être déterminé (réseau, auth,
+    configuration manquante, ou code HTTP ni ``200`` ni ``404``) — distinct d'un ``None``
+    qui, lui, signifie que le portail a confirmé l'absence de l'organisation. Ne JAMAIS
+    traiter cette erreur comme une confirmation d'archivage : l'organisation peut très
+    bien être toujours vivante côté portail, on ne sait simplement pas la lire maintenant."""
+
+
 def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | None:
     """Lit directement sur le **portail** (identité PROVIDER, ``usr_portail``/
     ``pwd_portail``, jamais l'animateur) l'état de la dernière tâche BPMN
@@ -979,7 +987,15 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     "functional_status", "status"}``. ``None`` si l'organisation n'existe plus côté
     portail (confirmé le 2026-11-14 : une organisation réellement archivée + validée
     disparaît de cette route, ``GET /strukture/v1/organizations/{uuid}`` renvoie alors
-    un code autre que ``200``) ou si l'appel échoue (réseau, auth).
+    ``404``).
+
+    Lève :class:`EtatPortailIndisponibleError` dans tous les autres cas où l'état ne
+    peut pas être déterminé (pas de ``url_portail`` configurée, échec réseau/auth, ou
+    code HTTP ni ``200`` ni ``404`` — ex. ``401``/``500`` transitoire) : un ``None``
+    dans ces cas-là serait confondu par l'appelant avec « organisation archivée », alors
+    qu'on ne sait tout simplement pas (l'organisation peut être toujours vivante côté
+    portail) — voir ``vidage.vider_commune()`` côté starterkit, qui supprime la copie
+    nœud uniquement sur un ``None`` confirmé.
 
     **Pourquoi lire le portail et pas le nœud** : le nœud ne reflète JAMAIS l'archivage
     — confirmé en lisant ``rudi-catalog/src/controllers/reportController.js::
@@ -1002,22 +1018,33 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     """
     url_portail = conf.get("url_portail")
     if not url_portail:
-        return None
+        raise EtatPortailIndisponibleError(
+            "pas d'url_portail configurée — impossible de savoir si l'organisation "
+            "existe encore côté portail"
+        )
     try:
         usr_portail = conf.get("usr_portail", conf["usr"])
         pwd_portail = conf.get("pwd_portail", conf["pwd"])
         token = _token_portail(url_portail, usr_portail, pwd_portail)
         r = session.get(f"{url_portail.rstrip('/')}/strukture/v1/organizations/{organization_id}",
                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
-        if r.status_code != 200:
+        if r.status_code == 404:
             return None
+        if r.status_code != 200:
+            raise EtatPortailIndisponibleError(
+                f"réponse HTTP {r.status_code} inattendue du portail pour l'organisation "
+                f"{organization_id[:12]}… (ni 200 ni 404)"
+            )
         d = r.json()
         return {"organization_status": d.get("organizationStatus"),
                 "functional_status": d.get("functional_status"), "status": d.get("status")}
+    except EtatPortailIndisponibleError:
+        raise
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : lecture de l'état portail de l'organisation "
-              f"{organization_id[:12]}… échouée : {e}")
-        return None
+        raise EtatPortailIndisponibleError(
+            f"lecture de l'état portail de l'organisation {organization_id[:12]}… "
+            f"échouée : {e}"
+        ) from e
 
 
 def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | None:

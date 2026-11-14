@@ -22,6 +22,7 @@ from rudi_harvest_toolkit.rudi_client import (
     demander_suppression_organisation,
     desactiver_verification_tls,
     email_par_defaut,
+    EtatPortailIndisponibleError,
     etat_tache_organisation_portail,
     global_id_pour_local_id,
     lister_organisations,
@@ -1076,21 +1077,34 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
         sess.get.return_value = rep_get
         return sess
 
-    def test_sans_url_portail_no_op_sans_requete(self):
+    def test_sans_url_portail_leve_indisponible(self):
+        """Pas de url_portail configurée : on ne SAIT pas si l'organisation existe
+        encore côté portail — ne doit jamais être confondu avec un None confirmé."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
+            with self.assertRaises(EtatPortailIndisponibleError):
+                etat_tache_organisation_portail(conf, "uuid-1")
         sess.get.assert_not_called()
 
     def test_organisation_absente_du_portail_retourne_none(self):
         """Confirmé en conditions réelles le 2026-11-14 : une organisation archivée et
-        validée disparaît de cette route (code != 200) — c'est le signal utilisé pour
-        détecter qu'un archivage précédemment demandé a été validé."""
+        validée disparaît de cette route (404) — c'est le signal utilisé pour détecter
+        qu'un archivage précédemment demandé a été validé."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_statut=404)
             self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
+
+    def test_erreur_portail_401_leve_indisponible_pas_none(self):
+        """Un 401/500 transitoire ne doit JAMAIS être traité comme une confirmation
+        d'archivage (l'organisation peut très bien être toujours vivante)."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_statut=401)
+            with self.assertRaises(EtatPortailIndisponibleError):
+                etat_tache_organisation_portail(conf, "uuid-1")
 
     def test_tache_en_attente_renvoie_le_statut_pending(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
@@ -1110,12 +1124,13 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
         self.assertEqual(sess.get.call_args[0][0],
                          "http://portail.test/strukture/v1/organizations/uuid-1")
 
-    def test_echec_reseau_retourne_none(self):
+    def test_echec_reseau_leve_indisponible_pas_none(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
-            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
+            with self.assertRaises(EtatPortailIndisponibleError):
+                etat_tache_organisation_portail(conf, "uuid-1")
 
 
 class TestDemanderDetachementProducteur(unittest.TestCase):
