@@ -7,11 +7,20 @@ from urllib3.util.retry import Retry
 # poignée TCP/TLS par appel sur les ~200+ JDD moissonnés) + retry/backoff sur les
 # erreurs transitoires (429, 5xx, erreurs réseau). Pas de retry sur les 4xx
 # (404/403...), qui doivent propager immédiatement.
+#
+# allowed_methods volontairement restreint aux méthodes idempotentes (GET/HEAD/
+# OPTIONS/PUT/DELETE) — PAS POST : plusieurs appels POST de rudi_client.py créent
+# une ressource côté portail sans clé d'idempotence (ex. tâche de création
+# d'organisation, strukture/v1/organizations/tasks) ; un 5xx transitoire après que
+# la requête a déjà été traitée côté serveur (réponse perdue en route) ferait
+# retenter le même POST et créerait une 2e ressource en double. Un POST en échec
+# propage donc immédiatement, comme un 4xx — c'est à l'appelant de décider s'il
+# retente (voir le commentaire de packaging/entrypoint.py côté starterkit).
 _retry = Retry(
     total=3,
     backoff_factor=0.5,
     status_forcelist=(429, 500, 502, 503, 504),
-    allowed_methods=False,
+    allowed_methods=frozenset(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]),
 )
 _adapter = HTTPAdapter(max_retries=_retry, pool_maxsize=10)
 
