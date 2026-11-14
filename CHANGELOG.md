@@ -1,6 +1,46 @@
 # Changelog
 
-## Non publié
+## 0.5.5 — 2026-11-14 (revue de code, phase 1 + phase 2)
+
+### `http._retry` — ne retente plus les POST sur 5xx transitoire
+
+`allowed_methods=False` retentait TOUTES les méthodes, y compris POST — risque
+de créer une ressource en double (ex. tâche de création d'organisation côté
+portail) si la réponse d'un POST déjà traité se perd en route. Restreint aux
+méthodes idempotentes (GET/HEAD/OPTIONS/PUT/DELETE).
+
+### `rudi_client.etat_tache_organisation_portail()` — distingue erreur et archivage confirmé
+
+Retournait `None` à la fois pour « organisation confirmée archivée » (404) ET
+pour « on ne sait pas » (pas de `url_portail`, échec réseau/auth, 401/500
+transitoire) — risque de suppression de la copie nœud d'une organisation
+toujours vivante côté portail. `None` réservé au 404 confirmé ; nouvelle
+exception `EtatPortailIndisponibleError` dans tous les autres cas.
+
+### `rudi_client.publier_dataset()` — repli sur l'id déterministe, pas `uuid4()`
+
+Si `demander_creation_organisation()` échoue, le dataset se voyait attribuer
+un `organization_id` aléatoire qui n'a jamais existé côté nœud. Repli sur
+`_organization_id_deterministe()` à la place — cohérent avec une organisation
+créée entre-temps par un run concurrent ou une tentative précédente.
+
+### Détection HTTP par code, pas par sous-chaîne de message
+
+`"404" in str(e)` / `"409" in str(e)` pouvaient matcher un message qui
+contient ce nombre pour une tout autre raison. Remplacé par
+`getattr(e, "status", None) == <code>` (porté par `HttpError` de
+`rudi_node_write`) dans `demander_detachement_producteur()`,
+`supprimer_organisation()` et `supprimer_dataset()`.
+
+### Nettoyage (revue de code du 2026-11-14)
+
+`User-Agent` obsolète, paramètre inutile de `_statut_http()`, coquille et
+références mortes (`publish_rudi.py`, `enrichir_descriptions.py`,
+`enrichir_organisations.py`) dans la documentation, liste de modules
+incomplète dans `__init__.py`, couplage à la version du starterkit dans des
+docstrings de modules génériques, règle `organization_id` obsolète dans le
+README (décrivait encore `uuid4()` alors que l'id est déterministe depuis le
+correctif de déduplication).
 
 ### `rudi_client.demander_archivage_organisation()` — champ `draftType` manquant (bug réel, jamais archivait)
 
