@@ -2,6 +2,17 @@
 
 ## Non publié
 
+### `rudi_client._api_version()` — mise en cache par URL catalog
+
+Appelée une fois par JDD publié (13 fois par run), sans aucune mise en cache :
+sur un nœud dont le catalog n'est pas joignable sur l'URL déduite (ex. port 3030
+fermé publiquement — cas d'un nœud hébergé par un tiers), chaque appel payait le
+même avertissement et le même délai de connexion (5 s), 65 s perdues pour rien sur
+un run réel (2026-11-14). Résultat (succès comme échec) désormais mis en cache par
+URL catalog pour tout le run.
+
+## 0.5.3 — 2026-11-13
+
 ### `rudi_client.demander_creation_organisation()` — `organization_id` déterministe
 
 Corrige un doublon d'organisation observé en conditions réelles (nœud de démo RM,

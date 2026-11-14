@@ -115,15 +115,28 @@ def url_catalog(conf: dict) -> str:
     return f"{parsed.scheme}://{parsed.hostname}:3030/catalog"
 
 
+_cache_api_version: dict[str, str] = {}
+
+
 def _api_version(conf: dict) -> str:
-    """Récupère la version de l'API catalog du nœud RUDI."""
+    """Récupère la version de l'API catalog du nœud RUDI, mise en cache par URL
+    catalog pour tout le run (succès comme échec) — sans ce cache, un nœud dont le
+    catalog n'est pas joignable sur l'URL déduite (ex. port 3030 fermé publiquement,
+    cas des nœuds hébergés par un tiers) paie le même avertissement et le même délai
+    de connexion (5 s) à **chaque** JDD publié, 13 fois par run pour rien (observé en
+    pratique sur un nœud réel le 2026-11-14)."""
+    cle = url_catalog(conf)
+    if cle in _cache_api_version:
+        return _cache_api_version[cle]
     try:
-        reponse = session.get(f"{url_catalog(conf)}/version", timeout=5)
+        reponse = session.get(f"{cle}/version", timeout=5)
         reponse.raise_for_status()
-        return reponse.text.strip()
+        version = reponse.text.strip()
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API ({e}), valeur par défaut 1.4.0 utilisée.")
-        return "1.4.0"
+        version = "1.4.0"
+    _cache_api_version[cle] = version
+    return version
 
 
 def _creer_writer(conf: dict) -> RudiNodeWriter:

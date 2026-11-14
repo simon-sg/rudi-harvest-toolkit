@@ -7,6 +7,7 @@ from unittest import mock
 
 import requests
 
+from rudi_harvest_toolkit import rudi_client
 from rudi_harvest_toolkit.rudi_client import (
     _api_version,
     _dedoublonner_medias_file,
@@ -52,6 +53,11 @@ class TestChargerConfRudi(unittest.TestCase):
 
 
 class TestApiVersion(unittest.TestCase):
+    def setUp(self):
+        # _api_version met en cache par url_catalog — plusieurs tests ci-dessous
+        # réutilisent volontairement la même URL, à isoler les uns des autres.
+        rudi_client._cache_api_version.clear()
+
     def test_version_valide_retournee(self):
         conf = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
         reponse = mock.Mock(text="1.4.0")
@@ -76,6 +82,31 @@ class TestApiVersion(unittest.TestCase):
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.get.side_effect = ConnectionError("refusée")
             self.assertEqual(_api_version(conf), "1.4.0")
+
+    def test_mis_en_cache_un_seul_appel_reseau_pour_plusieurs_jdd(self):
+        # Simule un run à 13 JDD sur un nœud dont le catalog n'est pas joignable sur
+        # l'URL déduite : un seul appel réseau (et un seul avertissement) attendu,
+        # pas 13 — c'est le bug corrigé le 2026-11-14 (65 s perdues en pratique).
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = ConnectionError("refusée")
+            for _ in range(13):
+                self.assertEqual(_api_version(conf), "1.4.0")
+            sess.get.assert_called_once()
+
+    def test_cache_distinct_par_url_catalog(self):
+        conf_a = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
+        conf_b = {"url": "http://localhost:5032", "url_catalog": "http://localhost:5030/catalog"}
+        reponse_a = mock.Mock(text="1.4.0")
+        reponse_a.raise_for_status = mock.Mock()
+        reponse_b = mock.Mock(text="2.0.0")
+        reponse_b.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = [reponse_a, reponse_b]
+            self.assertEqual(_api_version(conf_a), "1.4.0")
+            self.assertEqual(_api_version(conf_b), "2.0.0")
+            self.assertEqual(_api_version(conf_a), "1.4.0")  # depuis le cache
+            self.assertEqual(sess.get.call_count, 2)
 
 
 class TestNoeudPret(unittest.TestCase):
