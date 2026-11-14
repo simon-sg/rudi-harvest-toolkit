@@ -219,6 +219,43 @@ class TestTokenPortail(unittest.TestCase):
             timeout=30,
         )
 
+    def test_appels_repetes_memes_identifiants_un_seul_post(self):
+        """Bug réel corrigé le 2026-11-14 : chacun des 9 points d'entrée portail de ce
+        fichier redemandait un jeton, soit 6-8 authentifications par run."""
+        reponse = mock.Mock(status_code=200)
+        reponse.json.return_value = {"access_token": "tok", "expires_in": 3600}
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = reponse
+            t1 = _token_portail("http://portail", "u", "p")
+            t2 = _token_portail("http://portail", "u", "p")
+        self.assertEqual(t1, t2)
+        sess.post.assert_called_once()
+
+    def test_identifiants_differents_pas_de_partage_de_cache(self):
+        reponse = mock.Mock(status_code=200)
+        reponse.json.return_value = {"access_token": "tok", "expires_in": 3600}
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.return_value = reponse
+            _token_portail("http://portail", "u", "p")
+            _token_portail("http://portail", "autre-usr", "p")
+        self.assertEqual(sess.post.call_count, 2)
+
+    def test_jeton_expire_redemande(self):
+        reponse = mock.Mock(status_code=200)
+        reponse.json.return_value = {"access_token": "tok", "expires_in": 40}
+        reponse.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.time") as m_time:
+            sess.post.return_value = reponse
+            m_time.return_value = 1_000.0
+            _token_portail("http://portail", "u", "p")
+            # expires_in=40, marge=30 -> mis en cache 10s ; +11s = expiré
+            m_time.return_value = 1_000.0 + 11
+            _token_portail("http://portail", "u", "p")
+        self.assertEqual(sess.post.call_count, 2)
+
 
 class TestListerOrganisations(unittest.TestCase):
     def test_expose_organization_list_sans_writer_public(self):

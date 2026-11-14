@@ -421,13 +421,40 @@ def _media_file_deja_complet(media: dict) -> bool:
     return bool(media.get("file_size")) and bool((media.get("checksum") or {}).get("hash"))
 
 
-def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
+# Cache mémoire-process du jeton OAuth2 portail, clé (url_portail, usr, pwd) → (jeton,
+# expiration epoch). Bug réel corrigé le 2026-11-14 : un run qui appelle les 9 points
+# d'entrée portail de ce fichier redemandait un jeton à CHAQUE appel (6-8
+# authentifications par run) ; voir _vider_cache_token_portail() pour les tests.
+_CACHE_TOKENS_PORTAIL: dict[tuple[str, str, str], tuple[str, float]] = {}
+_MARGE_EXPIRATION_TOKEN_S = 30
+
+
+def _vider_cache_token_portail() -> None:
+    """Réservé aux tests — un process réel ne vit qu'un run, jamais besoin de vider."""
+    _CACHE_TOKENS_PORTAIL.clear()
+
+
+def _token_portail(url_portail: str, usr: str, pwd: str, *, forcer_renouvellement: bool = False) -> str:
     """Token OAuth2 (client_credentials) auprès du **portail** (pas le nœud), avec les
     identifiants du compte ROBOT — même pattern que
     ``moissonneur-ods/portail_client.py::obtenir_token_robot()``, éprouvé contre le
     portail ROOB local. Lève une exception si le portail refuse (401 ``invalid_client``
     notamment, si ce compte n'est pas enregistré côté ACL comme client OAuth2 — vérifier
-    avec l'équipe qui a fourni les identifiants dans ce cas)."""
+    avec l'équipe qui a fourni les identifiants dans ce cas).
+
+    Mis en cache pour le reste du run (marge de ``_MARGE_EXPIRATION_TOKEN_S`` avant
+    l'expiration annoncée par ``expires_in``, ou 60s si le portail ne l'annonce pas).
+    ``forcer_renouvellement`` ignore un éventuel HIT de cache et redemande un jeton
+    frais — **indispensable** pour les 2 points d'appel qui rejouent déjà un 401 avec
+    un token renouvelé (``demander_suppression_organisation``,
+    ``supprimer_dataset_portail``) : sans ce paramètre, l'ajout du cache leur aurait
+    fait rejouer avec le MÊME jeton rejeté, cassant silencieusement leur renouvellement."""
+    cle = (url_portail, usr, pwd)
+    if not forcer_renouvellement:
+        en_cache = _CACHE_TOKENS_PORTAIL.get(cle)
+        if en_cache is not None and time.time() < en_cache[1]:
+            return en_cache[0]
+
     r = session.post(
         f"{url_portail.rstrip('/')}/oauth2/token",
         auth=(usr, pwd),
@@ -435,7 +462,15 @@ def _token_portail(url_portail: str, usr: str, pwd: str) -> str:
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()["access_token"]
+    corps = r.json()
+    jeton = corps["access_token"]
+    expires_in = corps.get("expires_in")
+    if isinstance(expires_in, (int, float)) and expires_in > _MARGE_EXPIRATION_TOKEN_S:
+        duree_cache = expires_in - _MARGE_EXPIRATION_TOKEN_S
+    else:
+        duree_cache = 60
+    _CACHE_TOKENS_PORTAIL[cle] = (jeton, time.time() + duree_cache)
+    return jeton
 
 
 # Namespace fixe pour l'UUID5 ci-dessous — valeur arbitraire, générée une seule fois
@@ -1163,7 +1198,7 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
     try:
         r = _delete(token)
         if r.status_code == 401:
-            token = _token_portail(url_portail, usr_portail, pwd_portail)
+            token = _token_portail(url_portail, usr_portail, pwd_portail, forcer_renouvellement=True)
             r = _delete(token)
         if r.status_code >= 400:
             indice_409 = (" — producteur probablement encore rattaché : appeler "
@@ -1569,7 +1604,7 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     try:
         r = _delete(token)
         if r.status_code == 401:
-            token = _token_portail(url_portail, usr_portail, pwd_portail)
+            token = _token_portail(url_portail, usr_portail, pwd_portail, forcer_renouvellement=True)
             r = _delete(token)
         if r.status_code >= 400:
             print(f"  [RUDI] AVERTISSEMENT : suppression portail de {global_id[:12]}… refusée "
