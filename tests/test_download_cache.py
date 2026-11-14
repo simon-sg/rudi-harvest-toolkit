@@ -273,6 +273,79 @@ class TestTelecharger(unittest.TestCase):
         with open(chemin, "rb") as f:
             self.assertEqual(f.read(), b"integral")
 
+    def test_ne_touche_pas_un_tmp_etranger_dune_autre_tentative_en_cours(self):
+        # Revue qualité 0.7.1 : simule un appel concurrent déjà en cours de reprise
+        # pour la même URL (permis — voir publish.py/_verrou_publication, le
+        # téléchargement reste parallèle). Avant ce fix, le début de telecharger()
+        # effaçait sans condition tout .tmp au nom prévisible de cette URL ; un appel
+        # B qui démarre pendant qu'un appel A est en pleine reprise détruirait les
+        # octets déjà reçus par A. Le .tmp est maintenant nommé avec un suffixe
+        # aléatoire par appel, donc un ancien .tmp (même au nom prévisible) n'est
+        # plus jamais touché.
+        url = "https://exemple.fr/national.csv"
+        chemin_final = chemin_cache(url, self.dossier)
+        chemin_tmp_etranger = chemin_final + ".tmp"  # ancien nommage, simule "A"
+        os.makedirs(os.path.dirname(chemin_tmp_etranger), exist_ok=True)
+        with open(chemin_tmp_etranger, "wb") as f:
+            f.write(b"octets-deja-recus-par-un-autre-appel-en-cours")
+
+        session = mock.Mock()
+        session.get.return_value = _reponse_mock([b"b1", b"b2"])
+
+        chemin = telecharger(url, dossier=self.dossier, session_http=session)
+
+        with open(chemin, "rb") as f:
+            self.assertEqual(f.read(), b"b1b2")
+        with open(chemin_tmp_etranger, "rb") as f:
+            self.assertEqual(f.read(), b"octets-deja-recus-par-un-autre-appel-en-cours")
+
+    def test_416_sur_reprise_retelecharge_depuis_le_debut_sans_tentative_supplementaire(self):
+        reponse_1 = mock.Mock()
+        reponse_1.status_code = 200
+        reponse_1.headers = {"ETag": '"abc123"'}
+        reponse_1.raise_for_status = mock.Mock()
+        reponse_1.close = mock.Mock()
+
+        def _flux_casse():
+            yield b"part1"
+            raise requests.exceptions.ConnectionError("Connection broken")
+
+        reponse_1.iter_content = mock.Mock(return_value=_flux_casse())
+
+        reponse_416 = mock.Mock()
+        reponse_416.status_code = 416
+        reponse_416.close = mock.Mock()
+
+        reponse_fraiche = mock.Mock()
+        reponse_fraiche.status_code = 200
+        reponse_fraiche.headers = {"ETag": '"abc123"'}
+        reponse_fraiche.raise_for_status = mock.Mock()
+        reponse_fraiche.close = mock.Mock()
+        reponse_fraiche.iter_content = mock.Mock(return_value=iter([b"integral"]))
+
+        session = mock.Mock()
+        session.get.side_effect = [reponse_1, reponse_416, reponse_fraiche]
+
+        with mock.patch("rudi_harvest_toolkit.download_cache.time.sleep"):
+            chemin = telecharger(
+                "https://exemple.fr/gros.csv", dossier=self.dossier, session_http=session,
+            )
+
+        with open(chemin, "rb") as f:
+            self.assertEqual(f.read(), b"integral")
+        self.assertEqual(session.get.call_count, 3)  # pas de 3e tentative "officielle"
+
+    def test_206_inattendu_sans_range_leve_plutot_que_fichier_tronque(self):
+        reponse = mock.Mock()
+        reponse.status_code = 206  # proxy/CDN non conforme : 206 sans Range demandé
+        reponse.close = mock.Mock()
+
+        session = mock.Mock()
+        session.get.return_value = reponse
+
+        with self.assertRaises(ErreurTelechargement):
+            telecharger("https://exemple.fr/x.csv", dossier=self.dossier, session_http=session)
+
 
 class TestPurgerEtInvalider(unittest.TestCase):
     def setUp(self):

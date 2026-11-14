@@ -19,6 +19,7 @@ import datetime
 import hashlib
 import os
 import time
+import uuid
 
 import requests
 
@@ -93,8 +94,14 @@ def telecharger(
     nouvelle tentative essaie de **reprendre** depuis les octets déjà écrits
     (``Range: bytes=N-``, avec ``If-Range`` sur l'``ETag``/``Last-Modified`` de la
     1ère réponse pour ne jamais reprendre sur un contenu changé entre-temps) ; si le
-    serveur ne renvoie pas ``206`` (pas de support ``Range``, ou ressource modifiée),
-    repli automatique et silencieux sur un téléchargement complet depuis le début.
+    serveur ne renvoie pas ``206`` (pas de support ``Range``, ressource modifiée, ou
+    ``416`` si elle est devenue plus courte que prévu), repli automatique et
+    silencieux sur un téléchargement complet depuis le début.
+
+    Le fichier temporaire est **propre à cet appel** (suffixe aléatoire) : deux
+    appels concurrents pour la même ``url`` (volontairement permis, voir
+    ``publish.py``/``wikipedia.py``) ne se marchent jamais dessus, même si l'un des
+    deux est en train de reprendre une tentative précédente.
     """
     chemin = chemin_cache(url, dossier)
     if os.path.exists(chemin):
@@ -109,14 +116,7 @@ def telecharger(
 
     os.makedirs(os.path.dirname(chemin), exist_ok=True)
     session_http = session_http or session
-    chemin_tmp = chemin + ".tmp"
-    # Un .tmp orphelin d'un run précédent (process tué, pas une ConnectionError gérée
-    # ci-dessous) n'a pas de validateur associé dans CET appel : jamais pris pour une
-    # reprise valide, toujours effacé avant de commencer.
-    try:
-        os.remove(chemin_tmp)
-    except OSError:
-        pass
+    chemin_tmp = f"{chemin}.tmp.{uuid.uuid4().hex}"
 
     validateur: str | None = None
     total = 0
@@ -129,8 +129,23 @@ def telecharger(
             headers["If-Range"] = validateur
         try:
             reponse = session_http.get(url, stream=True, timeout=timeout, headers=headers)
-            if reponse.status_code != 206:
-                reponse.raise_for_status()
+            if headers.get("Range") and reponse.status_code == 416:
+                # Reprise explicitement refusée (ex. ressource devenue plus courte
+                # que prévu) : requête fraîche sans Range, dans CETTE tentative —
+                # n'en consomme pas une de plus.
+                reponse.close()
+                headers = {}
+                deja_recus = 0
+                reponse = session_http.get(url, stream=True, timeout=timeout, headers=headers)
+            reponse.raise_for_status()
+            if not headers.get("Range") and reponse.status_code == 206:
+                # Jamais vu en pratique avec un serveur conforme, mais un proxy/CDN
+                # qui renverrait du contenu partiel sans qu'on l'ait demandé ne doit
+                # jamais être pris pour un téléchargement complet (fichier tronqué,
+                # silencieusement mis en cache comme s'il était valide).
+                raise requests.exceptions.HTTPError(
+                    f"réponse 206 inattendue sans Range demandé ({url})", response=reponse,
+                )
         except Exception as e:
             raise ErreurTelechargement(f"Échec du téléchargement de {url} : {e}") from e
 

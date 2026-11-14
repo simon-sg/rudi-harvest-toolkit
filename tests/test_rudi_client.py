@@ -83,16 +83,30 @@ class TestApiVersion(unittest.TestCase):
             sess.get.side_effect = ConnectionError("refusée")
             self.assertEqual(_api_version(conf), "1.4.0")
 
-    def test_mis_en_cache_un_seul_appel_reseau_pour_plusieurs_jdd(self):
+    def test_mis_en_cache_apres_1_echec_pour_plusieurs_jdd(self):
         # Simule un run à 13 JDD sur un nœud dont le catalog n'est pas joignable sur
-        # l'URL déduite : un seul appel réseau (et un seul avertissement) attendu,
-        # pas 13 — c'est le bug corrigé le 2026-11-14 (65 s perdues en pratique).
+        # l'URL déduite : 2 appels réseau (1 tentative + 1 retry avant de figer
+        # l'échec en cache) pour le 1er JDD, 0 pour les 12 suivants — pas 13 appels
+        # au total, c'est le bug corrigé le 2026-11-14 (65 s perdues en pratique).
         conf = {"url": "http://localhost:4032"}
-        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
             sess.get.side_effect = ConnectionError("refusée")
             for _ in range(13):
                 self.assertEqual(_api_version(conf), "1.4.0")
-            sess.get.assert_called_once()
+            self.assertEqual(sess.get.call_count, 2)
+
+    def test_echec_transitoire_recupere_par_le_retry(self):
+        # Un seul aléa de connexion sur le 1er essai ne doit pas figer la version
+        # par défaut pour tout le run si le 2e essai, lui, réussit.
+        conf = {"url": "http://localhost:4032"}
+        reponse_ok = mock.Mock(text="2.0.0")
+        reponse_ok.raise_for_status = mock.Mock()
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
+            sess.get.side_effect = [ConnectionError("refusée"), reponse_ok]
+            self.assertEqual(_api_version(conf), "2.0.0")
+            self.assertEqual(sess.get.call_count, 2)
 
     def test_cache_distinct_par_url_catalog(self):
         conf_a = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}

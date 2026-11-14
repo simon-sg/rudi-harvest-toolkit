@@ -9,7 +9,9 @@ sur un nœud dont le catalog n'est pas joignable sur l'URL déduite (ex. port 30
 fermé publiquement — cas d'un nœud hébergé par un tiers), chaque appel payait le
 même avertissement et le même délai de connexion (5 s), 65 s perdues pour rien sur
 un run réel (2026-11-14). Résultat (succès comme échec) désormais mis en cache par
-URL catalog pour tout le run.
+URL catalog pour tout le run — 2 tentatives (pas 1) avant de figer un échec en
+cache, pour qu'un aléa isolé sur le 1er appel ne fige pas la version par défaut
+pour tout le run (revue qualité avant publication de la 0.7.1).
 
 ### `rudi_client` — timeout abaissé sur les lookups d'organisation (30s → 10s)
 
@@ -28,8 +30,14 @@ probablement un proxy/pare-feu fermant les connexions longues après une durée
 fixe, que retenter sans reprise ne pouvait jamais dépasser. Les tentatives
 suivantes reprennent désormais depuis les octets déjà écrits (`Range`, avec
 `If-Range` sur l'`ETag`/`Last-Modified` de la 1ère réponse pour ne jamais reprendre
-sur un contenu changé entre-temps) ; repli automatique sur un téléchargement complet
-si le serveur ne renvoie pas `206`.
+sur un contenu changé entre-temps ; `416` sur une reprise refusée redémarre un
+téléchargement complet dans la même tentative ; un `206` sans `Range` demandé
+(proxy/CDN non conforme) lève plutôt que d'être pris pour un fichier complet).
+Fichier temporaire propre à chaque appel (suffixe aléatoire), pas partagé par son
+nom prévisible : deux appels concurrents pour la même URL (permis, voir
+`publish.py`) ne se marchent plus dessus (revue qualité avant publication de la
+0.7.1 — le nommage partagé introduit par ce fix lui-même aurait pu corrompre un
+appel concurrent en cours de reprise).
 
 ## 0.5.3 — 2026-11-13
 

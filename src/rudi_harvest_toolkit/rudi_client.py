@@ -134,19 +134,30 @@ def _api_version(conf: dict) -> str:
     catalog n'est pas joignable sur l'URL déduite (ex. port 3030 fermé publiquement,
     cas des nœuds hébergés par un tiers) paie le même avertissement et le même délai
     de connexion (5 s) à **chaque** JDD publié, 13 fois par run pour rien (observé en
-    pratique sur un nœud réel le 2026-11-14)."""
+    pratique sur un nœud réel le 2026-11-14).
+
+    2 tentatives avant de figer un échec en cache (pas 1) : un nœud juste joignable
+    de façon intermittente (pas franchement mort, comme le port fermé observé en
+    pratique) ne doit pas voir un unique aléa de connexion sur le 1er JDD imposer la
+    version par défaut à tous les JDD suivants du run, sans aucun moyen de s'en
+    remettre avant un nouveau process."""
     cle = url_catalog(conf)
     if cle in _cache_api_version:
         return _cache_api_version[cle]
-    try:
-        reponse = session.get(f"{cle}/version", timeout=5)
-        reponse.raise_for_status()
-        version = reponse.text.strip()
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API ({e}), valeur par défaut 1.4.0 utilisée.")
-        version = "1.4.0"
-    _cache_api_version[cle] = version
-    return version
+    derniere_erreur: Exception | None = None
+    for tentative in range(2):
+        if tentative:
+            time.sleep(1)
+        try:
+            reponse = session.get(f"{cle}/version", timeout=5)
+            reponse.raise_for_status()
+            _cache_api_version[cle] = reponse.text.strip()
+            return _cache_api_version[cle]
+        except Exception as e:
+            derniere_erreur = e
+    print(f"  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API ({derniere_erreur}), valeur par défaut 1.4.0 utilisée.")
+    _cache_api_version[cle] = "1.4.0"
+    return "1.4.0"
 
 
 def _creer_writer(conf: dict) -> RudiNodeWriter:
