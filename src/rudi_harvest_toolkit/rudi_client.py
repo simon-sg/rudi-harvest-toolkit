@@ -862,16 +862,29 @@ _MESSAGE_MODERATEUR_ARCHIVAGE = "Archivage d'une organisation en double, créée
 
 def _formulaire_archivage(message: str) -> dict:
     """Construit la valeur du champ ``form`` (type ``DRAFT_ARCHIVE``) d'une demande
-    d'archivage — section unique ``archive-organization``, 2 champs requis :
-    ``organizationArchiveMode`` (``ARCHIVED``|``DISENGAGED`` — ``DISENGAGED`` retire
-    aussi les réutilisations du grand public, utilisé ici car ces organisations n'en
-    ont jamais eu) et ``messageToModerator`` (texte libre)."""
+    d'archivage — section unique ``archive-organization``, 3 champs requis :
+    ``draftType`` (``"archive"``, **obligatoire** — c'est la seule valeur lue par le
+    gateway BPMN ``ExclusiveGateway_1`` pour router vers la branche archivage plutôt
+    que « Modification » ; ``OrganizationWorkflowHelper.getDraftType()`` la cherche
+    dans les données du formulaire hydratées, sous la clé ``draftType`` précisément —
+    ``"type": "DRAFT_ARCHIVE"`` au niveau racine du JSON, ci-dessous, est seulement le
+    type de *template* de formulaire et n'est jamais lu par ce gateway ; sans ce champ,
+    la demande est acceptée (``POST``/``PUT`` renvoient ``200``) mais traitée comme une
+    simple mise à jour d'organisation — confirmé le 2026-11-14 en traçant
+    ``act_hi_actinst`` : la demande passe par ``UserTask_3``/« Traitement de la demande
+    de modification d'organisation », jamais par ``UserTask_2``/``ScriptTask_4`` qui
+    appelle ``archiveOrganization()``, et ``organization_status`` reste ``VALIDATED``
+    sans jamais passer à ``DISENGAGED``), ``organizationArchiveMode``
+    (``ARCHIVED``|``DISENGAGED`` — ``DISENGAGED`` retire aussi les réutilisations du
+    grand public, utilisé ici car ces organisations n'en ont jamais eu) et
+    ``messageToModerator`` (texte libre)."""
     return {
         "type": "DRAFT_ARCHIVE",
         "sections": [
             {
                 "name": "organization-process-draft/archive-organization",
                 "fields": [
+                    _champ("draftType", "archive"),
                     _champ("organizationArchiveMode", "DISENGAGED"),
                     _champ("messageToModerator", message),
                 ],
@@ -957,6 +970,54 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : échec de la demande d'archivage portail : {e}")
         return False
+
+
+def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | None:
+    """Lit directement sur le **portail** (identité PROVIDER, ``usr_portail``/
+    ``pwd_portail``, jamais l'animateur) l'état de la dernière tâche BPMN
+    ``organization-process`` connue pour cette organisation : ``{"organization_status",
+    "functional_status", "status"}``. ``None`` si l'organisation n'existe plus côté
+    portail (confirmé le 2026-11-14 : une organisation réellement archivée + validée
+    disparaît de cette route, ``GET /strukture/v1/organizations/{uuid}`` renvoie alors
+    un code autre que ``200``) ou si l'appel échoue (réseau, auth).
+
+    **Pourquoi lire le portail et pas le nœud** : le nœud ne reflète JAMAIS l'archivage
+    — confirmé en lisant ``rudi-catalog/src/controllers/reportController.js::
+    treatOrgnizationsReports`` : le ``switch`` sur ``reportBody[API_REPORT_METHOD]``
+    gère ``POST``/``ATTACH``/``DETACH``, mais pas ``DELETE`` (celui envoyé par
+    ``archiveOrganization()`` côté portail une fois l'archivage validé) — ce cas tombe
+    dans le ``default`` (``logW(... "Not implemented yet")``) et ne met donc jamais à
+    jour ``organization_status``/``linked_producer_status`` sur le nœud.
+    ``organisation_par_nom()``/``etat_organisation()`` ne permettent donc jamais de
+    savoir si un archivage a été validé — seule cette fonction le permet.
+
+    **Pourquoi ce champ précis** : ``status`` vaut ``"PENDING"`` tant qu'une tâche
+    ``organization-process`` est en cours (créée, pas encore validée/refusée) pour cette
+    organisation — observé en conditions réelles le 2026-11-14 (demande d'archivage
+    déposée, avant validation animateur). Utilisé pour éviter de redéposer une 2e
+    demande d'archivage en double tant que la 1ère est encore en attente (même risque
+    de doublon que pour la création d'organisation, voir
+    ``demander_creation_organisation()``) — ``POST /organizations/tasks`` ne vérifie lui-
+    même jamais l'absence d'une tâche déjà en cours avant d'en créer une nouvelle.
+    """
+    url_portail = conf.get("url_portail")
+    if not url_portail:
+        return None
+    try:
+        usr_portail = conf.get("usr_portail", conf["usr"])
+        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        token = _token_portail(url_portail, usr_portail, pwd_portail)
+        r = session.get(f"{url_portail.rstrip('/')}/strukture/v1/organizations/{organization_id}",
+                        headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        if r.status_code != 200:
+            return None
+        d = r.json()
+        return {"organization_status": d.get("organizationStatus"),
+                "functional_status": d.get("functional_status"), "status": d.get("status")}
+    except Exception as e:
+        print(f"  [RUDI] AVERTISSEMENT : lecture de l'état portail de l'organisation "
+              f"{organization_id[:12]}… échouée : {e}")
+        return None
 
 
 def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | None:

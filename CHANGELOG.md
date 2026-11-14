@@ -1,5 +1,29 @@
 # Changelog
 
+## Non publié
+
+### `rudi_client.demander_archivage_organisation()` — champ `draftType` manquant (bug réel, jamais archivait)
+
+Confirmé de bout en bout le 2026-11-14 (organisation disposable, cycle complet
+détachement → validation → archivage → validation → nettoyage) : la demande
+d'archivage était acceptée (`200`) mais silencieusement traitée comme une simple
+mise à jour d'organisation par le gateway BPMN `ExclusiveGateway_1`, faute du champ
+de formulaire `draftType: "archive"` — `organization_status` restait `VALIDATED`
+indéfiniment, sans jamais passer par `archiveOrganization()`. Corrigé. Ce test réel
+a aussi infirmé une conclusion précédente de ce README (règle 4, identifiants
+nœud ≠ portail) : les appels portail directs ne sont pas structurellement
+impossibles, les `401` observés venaient de `usr_portail`/`pwd_portail` jamais
+réellement câblés par les appelants, pas d'une absence d'identifiants ACL valides.
+
+### `rudi_client.etat_tache_organisation_portail()` — nouvelle fonction
+
+Lit directement l'état côté portail (`GET /strukture/v1/organizations/{uuid}`) de
+la dernière tâche `organization-process` d'une organisation — le nœud ne reflète
+jamais l'archivage (`reportController.js::treatOrgnizationsReports` n'a pas de cas
+pour `Method.DELETE`). Permet à un appelant d'éviter de redéposer une 2e demande
+d'archivage tant qu'une 1ère est encore `PENDING`, et de détecter qu'un archivage a
+été validé (l'organisation disparaît alors de cette route).
+
 ## 0.5.4 — 2026-11-14
 
 ### `rudi_client._api_version()` — mise en cache par URL catalog

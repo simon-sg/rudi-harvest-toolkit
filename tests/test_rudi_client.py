@@ -22,6 +22,7 @@ from rudi_harvest_toolkit.rudi_client import (
     demander_suppression_organisation,
     desactiver_verification_tls,
     email_par_defaut,
+    etat_tache_organisation_portail,
     global_id_pour_local_id,
     lister_organisations,
     marquer_organisations_traitees,
@@ -1041,6 +1042,11 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         section = form["sections"][0]
         self.assertEqual(section["name"], "organization-process-draft/archive-organization")
         champs = {f["definition"]["name"]: f["values"] for f in section["fields"]}
+        # Régression du bug réel du 2026-11-14 : sans ce champ, le gateway BPMN
+        # ExclusiveGateway_1 route silencieusement vers la branche « Modification »
+        # plutôt qu'« Archivage » (confirmé en traçant act_hi_actinst) — la demande
+        # est acceptée (200) mais n'archive jamais l'organisation.
+        self.assertEqual(champs["draftType"], ["archive"])
         self.assertEqual(champs["organizationArchiveMode"], ["DISENGAGED"])
         self.assertEqual(champs["messageToModerator"], ["msg test"])
 
@@ -1058,6 +1064,58 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
             self.assertFalse(demander_archivage_organisation(conf, "uuid-1", "Doublon"))
+
+
+class TestEtatTacheOrganisationPortail(unittest.TestCase):
+    def _session(self, sess, get_statut=200, get_json=None):
+        rep_token = mock.Mock(status_code=200)
+        rep_token.json.return_value = {"access_token": "tok123"}
+        sess.post.return_value = rep_token
+        rep_get = mock.Mock(status_code=get_statut)
+        rep_get.json.return_value = get_json if get_json is not None else {}
+        sess.get.return_value = rep_get
+        return sess
+
+    def test_sans_url_portail_no_op_sans_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
+        sess.get.assert_not_called()
+
+    def test_organisation_absente_du_portail_retourne_none(self):
+        """Confirmé en conditions réelles le 2026-11-14 : une organisation archivée et
+        validée disparaît de cette route (code != 200) — c'est le signal utilisé pour
+        détecter qu'un archivage précédemment demandé a été validé."""
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_statut=404)
+            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
+
+    def test_tache_en_attente_renvoie_le_statut_pending(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_json={
+                "organizationStatus": "VALIDATED",
+                "functional_status": "En attente de validation",
+                "status": "PENDING",
+            })
+            etat = etat_tache_organisation_portail(conf, "uuid-1")
+        self.assertEqual(etat, {
+            "organization_status": "VALIDATED",
+            "functional_status": "En attente de validation",
+            "status": "PENDING",
+        })
+        self.assertEqual(sess.get.call_args[0][0],
+                         "http://portail.test/strukture/v1/organizations/uuid-1")
+
+    def test_echec_reseau_retourne_none(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.post.side_effect = Exception("réseau indisponible")
+            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
 
 
 class TestDemanderDetachementProducteur(unittest.TestCase):
