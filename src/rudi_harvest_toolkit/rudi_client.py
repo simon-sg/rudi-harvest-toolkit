@@ -1281,7 +1281,7 @@ def publier_dataset(
     rudi_metadata["global_id"] = existant["global_id"] if existant else str(uuid.uuid4())
     rudi_metadata.setdefault("metadata_info", {})["api_version"] = _api_version(conf)
 
-    # organization_id : réutilise celui du nœud si l'org existe, sinon UUID v4
+    # organization_id : réutilise celui du nœud si l'org existe, sinon id déterministe
     org = rudi_metadata["producer"]
     org_name = org.get("organization_name", "")
     org_existante = next(
@@ -1312,7 +1312,17 @@ def publier_dataset(
         # en conditions réelles le 2026-10-15, RM et local) — pas de réassignation à attendre
         # ici, contrairement à l'ancienne route portail directe (`/organizations/request`) que
         # demander_creation_organisation() n'utilise plus.
-        org["organization_id"] = demander_creation_organisation(conf, org) or str(uuid.uuid4())
+        #
+        # Repli sur l'id déterministe (pas uuid4()) si la création échoue : uuid4()
+        # générerait un identifiant qui n'a jamais existé ni n'existera jamais côté
+        # nœud (le dataset référencerait alors un producteur fantôme, probablement
+        # rejeté silencieusement ou en échec plus tard sans lien évident avec la cause
+        # réelle) ; l'id déterministe, lui, reste celui qui serait attribué si la
+        # création réussissait — cohérent avec une organisation créée entre-temps par
+        # un run concurrent ou une tentative précédente.
+        org["organization_id"] = (
+            demander_creation_organisation(conf, org) or _organization_id_deterministe(org_name)
+        )
 
     # theme : vérifie que la valeur est dans les thèmes acceptés par ce nœud
     themes_valides = writer.themes or []
