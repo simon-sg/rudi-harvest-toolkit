@@ -1,15 +1,36 @@
 # Changelog
 
-## Non publié
+## 0.5.6 — 2026-11-14 (revue de code, phase 3)
 
-### `rudi_client.publier_dataset()` — un upload en échec persistant ne doit plus être écarté silencieusement
+### Fiabilité
 
-Un « time exceeded » encore présent après la 2e tentative était traité comme le cas
-(volontaire) « too big to be uploaded » : le média était écarté, le reste du dataset
-publié, et le hash d'état enregistrait le run comme réussi — perte de données
-silencieuse et permanente pour un JDD mono-fichier. Seul un dépassement de taille du
-nœud (politique connue) justifie de continuer sans ce média ; toute autre erreur
-persistante lève désormais une exception.
+- `rudi_client.publier_dataset()` : un upload en échec persistant (ex. « time
+  exceeded » encore présent après la 2e tentative) était traité comme le cas
+  (volontaire) « too big to be uploaded » : média écarté, reste du dataset publié,
+  hash d'état enregistré comme réussi — perte de données silencieuse et permanente
+  pour un JDD mono-fichier. Seul un dépassement de taille du nœud (politique connue)
+  justifie de continuer sans ce média ; toute autre erreur persistante lève désormais
+  une exception.
+- `state.sauvegarder_etat()` : écriture atomique (fichier temporaire + `os.replace`),
+  et ne plante plus sur un chemin sans dossier.
+- `commune.resoudre_commune()`/`resoudre_siren_commune()` : `reponse.json()` protégé
+  contre une réponse non-JSON (proxy/CDN) — lève `ErreurReseauCommune`, déjà catchée
+  par les appelants, au lieu d'un `ValueError` brut.
+- `download_cache.telecharger()` : le cache expiré n'est plus supprimé avant la
+  tentative réseau — une coupure laissait auparavant sans aucun cache du tout.
+
+### Performance
+
+- `rudi_client._token_portail()` : jeton OAuth2 portail mis en cache pour le run
+  (marge avant expiration), au lieu d'une authentification à chaque appel (6-8 par
+  run). Les 2 renouvellements explicites sur 401 (`demander_suppression_organisation`,
+  `supprimer_dataset_portail`) forcent un jeton frais via `forcer_renouvellement=True`.
+
+### Documentation
+
+- 4 docstrings nettoyées de références à des versions/axes de
+  `rudi-commune-starterkit` (deviennent fausses à chaque nouvelle version du
+  starterkit) : `description.py`, `download_cache.py`, `contacts.py`, `pivot.py`.
 
 ## 0.5.5 — 2026-11-14 (revue de code, phase 1 + phase 2)
 
