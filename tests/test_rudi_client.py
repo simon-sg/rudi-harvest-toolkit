@@ -12,6 +12,7 @@ from rudi_harvest_toolkit import rudi_client
 from rudi_harvest_toolkit.rudi_client import (
     _api_version,
     _dedoublonner_medias_file,
+    _identifiants_portail,
     _media_file_deja_complet,
     _organization_id_deterministe,
     _token_portail,
@@ -26,6 +27,7 @@ from rudi_harvest_toolkit.rudi_client import (
     EtatPortailIndisponibleError,
     etat_tache_organisation_portail,
     global_id_pour_local_id,
+    IdentifiantsPortailAbsentsError,
     lister_organisations,
     marquer_organisations_traitees,
     noeud_pret,
@@ -255,6 +257,33 @@ class TestTokenPortail(unittest.TestCase):
             m_time.return_value = 1_000.0 + 11
             _token_portail("http://portail", "u", "p")
         self.assertEqual(sess.post.call_count, 2)
+
+
+class TestIdentifiantsPortail(unittest.TestCase):
+    """Bug réel corrigé le 2026-11-14 : usr_portail/pwd_portail absents retombait
+    silencieusement sur les identifiants du nœud (usr/pwd), qui ne sont presque
+    jamais aussi des identifiants ROBOT portail valides — le portail refusait
+    l'authentification avec un 401 opaque, sans jamais dire que la vraie cause était
+    une configuration incomplète."""
+
+    def test_identifiants_presents_retournes_tels_quels(self):
+        conf = {"usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp"}
+        self.assertEqual(_identifiants_portail(conf), ("up", "pp"))
+
+    def test_usr_portail_absent_leve_sans_repli_sur_usr(self):
+        conf = {"usr": "u", "pwd": "p", "pwd_portail": "pp"}
+        with self.assertRaises(IdentifiantsPortailAbsentsError):
+            _identifiants_portail(conf)
+
+    def test_pwd_portail_absent_leve_sans_repli_sur_pwd(self):
+        conf = {"usr": "u", "pwd": "p", "usr_portail": "up"}
+        with self.assertRaises(IdentifiantsPortailAbsentsError):
+            _identifiants_portail(conf)
+
+    def test_aucun_des_deux_leve(self):
+        conf = {"usr": "u", "pwd": "p"}
+        with self.assertRaises(IdentifiantsPortailAbsentsError):
+            _identifiants_portail(conf)
 
 
 class TestListerOrganisations(unittest.TestCase):
@@ -772,7 +801,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.get.assert_not_called()
 
     def test_name_ou_id_manquant_false_sans_requete(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self.assertFalse(demander_mise_a_jour_organisation(
@@ -780,7 +809,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.post.assert_not_called()
 
     def test_succes_suit_le_flux_draft_update(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {"uuid": "uuid-portail"}})
@@ -802,7 +831,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertEqual(kwargs_start["headers"]["Authorization"], "Bearer tok123")
 
     def test_champs_du_formulaire_au_format_values_liste(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {}})
@@ -823,7 +852,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertTrue(message[0]["values"][0])
 
     def test_description_tronquee_a_1024(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_summary": "x" * 2000}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -833,7 +862,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertEqual(len(corps["description"]), 1024)
 
     def test_url_valide_transmise_dans_le_formulaire(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_url": "https://www.mydataball.fr/"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -846,7 +875,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertEqual(champs["url"], "https://www.mydataball.fr/")
 
     def test_url_non_conforme_ignoree(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_url": "pas une url"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -859,7 +888,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertNotIn("url", noms)
 
     def test_organization_inconnue_du_portail_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_reponse=mock.Mock(status_code=404))
@@ -868,7 +897,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.put.assert_not_called()
 
     def test_auth_portail_echoue_false_sans_requete(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
@@ -876,7 +905,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.put.assert_not_called()
 
     def test_creation_brouillon_refusee_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_statut=400)
@@ -884,7 +913,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.put.assert_not_called()
 
     def test_demarrage_refuse_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {}}, start_statut=400)
@@ -893,7 +922,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
     def test_deja_a_jour_aucune_demande_deposee(self):
         """Le nœud n'expose pas organization_url : sans ce garde-fou, chaque passage
         redéposerait une demande de modification identique."""
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -904,7 +933,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.put.assert_not_called()
 
     def test_description_differente_depose_une_demande(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_json={"organization_summary": "Ancienne description.",
@@ -915,7 +944,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         sess.put.assert_called_once()
 
     def test_image_transmise_comme_champ_organizationImage(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {}})
@@ -929,7 +958,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
         self.assertEqual(champ_img["definition"]["type"], "ATTACHMENT")
 
     def test_image_absente_aucun_champ_image(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {}})
@@ -943,7 +972,7 @@ class TestDemanderMiseAJourOrganisation(unittest.TestCase):
     def test_image_force_le_depot_meme_si_deja_a_jour(self):
         """Le portail n'expose pas « a déjà un logo » : fournir une image doit forcer
         le dépôt malgré une description/url déjà à jour."""
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         org = {**self.ORG, "organization_url": "https://www.mydataball.fr"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -962,8 +991,21 @@ class TestTeleverserPieceJointe(unittest.TestCase):
             self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
         sess.post.assert_not_called()
 
-    def test_succes_retourne_l_uuid(self):
+    def test_usr_portail_absent_avertissement_explicite_pas_de_requete(self):
+        """Bug réel corrigé le 2026-11-14 : retombait silencieusement sur usr/pwd (du
+        nœud), menant à un 401 opaque plutôt qu'à ce message clair."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("builtins.print") as m_print:
+            self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
+        sess.post.assert_not_called()
+        self.assertTrue(
+            any("usr_portail" in str(appel) for appel in m_print.call_args_list)
+        )
+
+    def test_succes_retourne_l_uuid(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             rep_token = mock.Mock(status_code=200)
@@ -981,7 +1023,7 @@ class TestTeleverserPieceJointe(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
 
     def test_uuid_en_corps_texte_brut(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             rep_token = mock.Mock(status_code=200)
@@ -993,14 +1035,14 @@ class TestTeleverserPieceJointe(unittest.TestCase):
                              "uuid-texte")
 
     def test_type_non_supporte_ignore_sans_upload(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.svg", "image/svg+xml"))
         sess.post.assert_not_called()
 
     def test_taille_excessive_ignoree_sans_upload(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self.assertIsNone(televerser_piece_jointe(conf, b"x" * (10 * 1024 * 1024 + 1),
@@ -1008,7 +1050,7 @@ class TestTeleverserPieceJointe(unittest.TestCase):
         sess.post.assert_not_called()
 
     def test_echec_upload_retourne_none(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             rep_token = mock.Mock(status_code=200)
@@ -1018,7 +1060,7 @@ class TestTeleverserPieceJointe(unittest.TestCase):
             self.assertIsNone(televerser_piece_jointe(conf, b"x", "logo.png", "image/png"))
 
     def test_auth_portail_echoue_retourne_none(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
@@ -1047,7 +1089,7 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         sess.post.assert_not_called()
 
     def test_organisation_inconnue_du_portail_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_statut=404)
@@ -1055,7 +1097,7 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         sess.post.assert_called_once()  # seulement le token, jamais le brouillon
 
     def test_succes_suit_le_flux_draft_archive(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {"uuid": "uuid-1"}})
@@ -1072,7 +1114,7 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         self.assertEqual(kwargs_start["json"]["asset"]["form"]["type"], "DRAFT_ARCHIVE")
 
     def test_champs_du_formulaire(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_corps={"asset": {}})
@@ -1090,7 +1132,7 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         self.assertEqual(champs["messageToModerator"], ["msg test"])
 
     def test_creation_refusee_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, create_statut=400)
@@ -1098,7 +1140,7 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
         sess.put.assert_not_called()
 
     def test_auth_portail_echoue_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
@@ -1128,7 +1170,7 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
         """Confirmé en conditions réelles le 2026-11-14 : une organisation archivée et
         validée disparaît de cette route (404) — c'est le signal utilisé pour détecter
         qu'un archivage précédemment demandé a été validé."""
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_statut=404)
@@ -1137,7 +1179,7 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
     def test_erreur_portail_401_leve_indisponible_pas_none(self):
         """Un 401/500 transitoire ne doit JAMAIS être traité comme une confirmation
         d'archivage (l'organisation peut très bien être toujours vivante)."""
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_statut=401)
@@ -1145,7 +1187,7 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
                 etat_tache_organisation_portail(conf, "uuid-1")
 
     def test_tache_en_attente_renvoie_le_statut_pending(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_json={
@@ -1163,7 +1205,7 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
                          "http://portail.test/strukture/v1/organizations/uuid-1")
 
     def test_echec_reseau_leve_indisponible_pas_none(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
@@ -1226,8 +1268,20 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
         sess.delete.assert_not_called()
         sess.post.assert_not_called()
 
+    def test_pwd_portail_absent_avertissement_explicite_pas_de_requete(self):
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up",
+                "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
+             mock.patch("builtins.print") as m_print:
+            self.assertFalse(demander_suppression_organisation(conf, "uuid-portail"))
+        sess.delete.assert_not_called()
+        sess.post.assert_not_called()
+        self.assertTrue(
+            any("pwd_portail" in str(appel) for appel in m_print.call_args_list)
+        )
+
     def test_succes_emet_un_delete_vers_organizations_request_uuid(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -1241,7 +1295,7 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
 
     def test_auth_portail_echoue_false_sans_delete(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             sess.post.side_effect = Exception("réseau indisponible")
@@ -1249,7 +1303,7 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
         sess.delete.assert_not_called()
 
     def test_401_renouvelle_le_token_et_rejoue(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -1263,7 +1317,7 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
         self.assertEqual(sess.delete.call_count, 2)
 
     def test_echec_404_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -1283,7 +1337,7 @@ class TestSupprimerDatasetPortail(unittest.TestCase):
         sess.post.assert_not_called()
 
     def test_succes_emet_un_delete_vers_kalim_resources(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -1297,7 +1351,7 @@ class TestSupprimerDatasetPortail(unittest.TestCase):
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer tok123")
 
     def test_401_renouvelle_le_token_et_rejoue(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -1311,7 +1365,7 @@ class TestSupprimerDatasetPortail(unittest.TestCase):
         self.assertEqual(sess.delete.call_count, 2)
 
     def test_echec_404_retourne_false(self):
-        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p",
+        conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
