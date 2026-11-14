@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.7 — 2026-11-14 (revue de code, points d'arbitrage)
+
+### Sécurité / fiabilité
+
+- `televerser_piece_jointe()`, `demander_mise_a_jour_organisation()`,
+  `demander_archivage_organisation()`, `etat_tache_organisation_portail()`,
+  `demander_suppression_organisation()`, `supprimer_dataset_portail()` :
+  l'absence de `usr_portail`/`pwd_portail` dans la configuration retombait
+  silencieusement sur les identifiants du nœud (`usr`/`pwd`), presque jamais
+  valides pour le compte ROBOT portail — le portail refusait alors
+  l'authentification avec un `401` opaque, sans jamais indiquer la vraie cause.
+  Échec explicite désormais (`IdentifiantsPortailAbsentsError`).
+
+### Documentation
+
+- `desactiver_verification_tls()` : documente sa limite réelle — n'affecte que
+  la session `requests` partagée (Wikipédia, data.gouv.fr, INSEE, résolution
+  commune/SIREN, et le probe `noeud_pret()`), jamais le chemin de publication
+  réel via `rudi_node_write`/`http.client.HTTPSConnection`, qui n'expose aucun
+  paramètre de vérification TLS.
+
 ## 0.5.6 — 2026-11-14 (revue de code, phase 3)
 
 ### Fiabilité
