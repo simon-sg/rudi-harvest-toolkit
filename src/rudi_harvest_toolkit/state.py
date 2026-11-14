@@ -20,10 +20,17 @@ def charger_etat(chemin: str) -> dict:
 
 
 def sauvegarder_etat(chemin: str, etat: dict) -> None:
-    """Sauvegarde un état dans un fichier JSON."""
-    os.makedirs(os.path.dirname(chemin), exist_ok=True)
-    with open(chemin, "w", encoding="utf-8") as f:
+    """Sauvegarde un état dans un fichier JSON — écriture atomique (fichier temporaire
+    + ``os.replace``) : une coupure (Ctrl-C, reboot) pendant l'écriture ne doit jamais
+    laisser un JSON tronqué, lu comme un état vide au prochain run (bug réel corrigé
+    le 2026-11-14)."""
+    dossier = os.path.dirname(chemin)
+    if dossier:
+        os.makedirs(dossier, exist_ok=True)
+    chemin_temporaire = f"{chemin}.tmp"
+    with open(chemin_temporaire, "w", encoding="utf-8") as f:
         json.dump(etat, f, ensure_ascii=False, indent=2)
+    os.replace(chemin_temporaire, chemin)
 
 
 def dataset_a_change(state: dict, dataset_id: str, last_modified: str) -> bool:

@@ -33,7 +33,7 @@ LICENCE_ETALAB = {
 # producteur ou un socle de JDD précis — réutilisable par n'importe quel harvester
 # consommant ``rudi_harvest_toolkit.datagouv.get_dataset_metadata()``. Même contenu que
 # la table déjà en dur dans ``moissonneuse-batteuse/src/translation/datagouv_to_rudi.py``
-# (pas encore unifiée — voir le backlog v4 de rudi-commune-starterkit).
+# (pas encore unifiée — voir le backlog de rudi-commune-starterkit).
 LICENCES_DATAGOUV_CONNUES: dict[str, dict] = {
     "lov2": {
         "licence_type": "STANDARD", "licence_label": "etalab-2.0",

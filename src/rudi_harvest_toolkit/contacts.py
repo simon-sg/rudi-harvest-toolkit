@@ -1,8 +1,8 @@
 """Extraction et résolution de contacts pour les métadonnées RUDI.
 
-Migré de ``moissonneuse-batteuse/src/connectors/contacts.py`` (v3 de
-rudi-commune-starterkit, Axe 2) — générique (aucun couplage Rennes Métropole, ce fichier
-n'importait que ``re``/``unicodedata``), réutilisable par n'importe quel harvester du
+Migré de ``moissonneuse-batteuse/src/connectors/contacts.py`` — générique (aucun
+couplage Rennes Métropole, ce fichier n'importait que ``re``/``unicodedata``),
+réutilisable par n'importe quel harvester du
 toolkit. ``moissonneuse-batteuse/src/connectors/contacts.py`` devient un shim de
 réexportation après cette migration, zéro changement requis dans ses 6 appelants.
 

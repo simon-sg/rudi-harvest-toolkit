@@ -112,7 +112,11 @@ def telecharger(
             return chemin
         if verbose:
             print(f"  Cache expiré, re-téléchargement : {url}")
-        os.remove(chemin)
+        # Bug réel corrigé le 2026-11-14 : supprimer le cache expiré ICI, avant même
+        # la tentative réseau, laissait sans aucun cache en cas de coupure (timeout,
+        # 5xx) — le `os.replace(chemin_tmp, chemin)` plus bas écrase déjà l'ancien
+        # fichier de façon atomique sur un téléchargement réussi, donc l'ancien fichier
+        # peut rester en place jusque-là sans aucun risque.
 
     os.makedirs(os.path.dirname(chemin), exist_ok=True)
     session_http = session_http or session
@@ -239,7 +243,7 @@ def invalider(url: str, *, dossier: str | os.PathLike | None = None) -> bool:
 
 def date_fichier_cache(chemin: str) -> str | None:
     """Date de dernière modification (mtime) de ``chemin``, en ISO 8601 UTC, ou
-    ``None`` si le fichier n'existe pas (v4 de rudi-commune-starterkit, Axe 2).
+    ``None`` si le fichier n'existe pas.
 
     Mécanisme retenu pour les sources sans date fiable côté serveur (BAN, DVF) :
     la mtime du fichier **en cache** (pas une sonde HEAD à chaque run) garantit par

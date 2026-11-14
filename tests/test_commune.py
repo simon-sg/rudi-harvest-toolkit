@@ -149,6 +149,18 @@ class TestResoudreCommune(unittest.TestCase):
             resoudre_commune("75101", session_http=session)
         session.get.assert_not_called()
 
+    def test_reponse_non_json_leve_erreur_reseau_pas_de_traceback_brut(self):
+        """Bug réel corrigé le 2026-11-14 : un proxy/CDN renvoyant du HTML (statut 200,
+        corps non JSON) faisait planter avec un ValueError brut au lieu du message
+        réseau prévu."""
+        session = mock.Mock()
+        reponse = mock.Mock()
+        reponse.raise_for_status = mock.Mock()
+        reponse.json.side_effect = ValueError("Expecting value: line 1 column 1")
+        session.get.return_value = reponse
+        with self.assertRaises(ErreurReseauCommune):
+            resoudre_commune("35120", session_http=session)
+
 
 class TestResoudreSirenCommune(unittest.TestCase):
     def test_resout_le_siren(self):
@@ -169,6 +181,15 @@ class TestResoudreSirenCommune(unittest.TestCase):
         session = mock.Mock()
         session.get.return_value = _reponse({"results": [], "total_results": 0})
         with self.assertRaises(CommuneIntrouvableError):
+            resoudre_siren_commune("35120", session_http=session)
+
+    def test_reponse_non_json_leve_erreur_reseau(self):
+        session = mock.Mock()
+        reponse = mock.Mock()
+        reponse.raise_for_status = mock.Mock()
+        reponse.json.side_effect = ValueError("Expecting value: line 1 column 1")
+        session.get.return_value = reponse
+        with self.assertRaises(ErreurReseauCommune):
             resoudre_siren_commune("35120", session_http=session)
 
     def test_plusieurs_resultats_leve_erreur_explicite(self):

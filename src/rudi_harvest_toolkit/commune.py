@@ -156,7 +156,15 @@ def resoudre_commune(
             f"Réponse HTTP {statut or '?'} de {GEO_API} pour la commune {code} : {e}"
         ) from e
 
-    donnees = reponse.json()
+    try:
+        donnees = reponse.json()
+    except ValueError as e:
+        # Bug réel corrigé le 2026-11-14 : un proxy/CDN qui renvoie du HTML (statut
+        # 200, corps non JSON) faisait planter avec un traceback brut au lieu du
+        # message réseau prévu.
+        raise ErreurReseauCommune(
+            f"Réponse non-JSON de {GEO_API} pour la commune {code} : {e}"
+        ) from e
     if not isinstance(donnees, dict) or not donnees.get("code"):
         raise CommuneIntrouvableError(
             f"Aucune commune trouvée pour le code INSEE {code} (réponse vide)."
@@ -220,7 +228,13 @@ def resoudre_siren_commune(
             f"commune {code} : {e}"
         ) from e
 
-    donnees = reponse.json()
+    try:
+        donnees = reponse.json()
+    except ValueError as e:
+        raise ErreurReseauCommune(
+            f"Réponse non-JSON de {RECHERCHE_ENTREPRISES_API} pour la commune "
+            f"{code} : {e}"
+        ) from e
     resultats = list((donnees or {}).get("results") or [])
     total = donnees.get("total_results", len(resultats)) if isinstance(donnees, dict) else len(resultats)
 

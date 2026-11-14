@@ -1,5 +1,5 @@
 """Assembleur de description structurée — mise en page pure, sans connaissance du
-domaine (v3 de rudi-commune-starterkit, Axe 3).
+domaine.
 
 Respecte strictement le sous-ensemble Markdown de :func:`markdown.markdown_vers_html`
 (paragraphes séparés par une ligne vide, liste à puces ``- item``, lien
