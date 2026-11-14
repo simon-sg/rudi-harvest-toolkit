@@ -1,5 +1,4 @@
-"""Assembleur GeoJSON par ligne — mise en page pure, sans connaissance du domaine
-(v4 de rudi-commune-starterkit, Axe 3).
+"""Assembleur GeoJSON par ligne — mise en page pure, sans connaissance du domaine.
 
 Même esprit que :mod:`description` : cette fonction ne fait qu'assembler un
 ``FeatureCollection`` à partir de lignes déjà filtrées par l'appelant, jamais ne

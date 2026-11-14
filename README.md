@@ -53,11 +53,14 @@ pipelines, pas un cas particulier.
    l'ancienne implémentation appelait le portail directement et exigeait des identifiants
    ROBOT **portail** séparés, introuvables/non fonctionnels sur un nœud externe réel (démo
    RM, `401 invalid_client`). La bonne méthode n'a besoin que de l'auth **nœud** habituelle.
-2. **`organization_id` : généré côté client (uuid4), requis par le nœud.** Contrairement à
-   l'ancienne route portail directe (qui assignait son propre UUID en ignorant toute valeur
-   proposée), le nœud **exige** `organization_id` dans le corps du `POST` (`400` sinon,
+2. **`organization_id` : déterministe (UUID5 dérivé du nom de l'organisation), requis par le
+   nœud.** L'identifiant est calculé par `_organization_id_deterministe()` à partir du nom
+   normalisé de l'organisation : une même organisation obtient toujours le même id, ce qui
+   rend la création idempotente. C'est précisément le correctif de déduplication — l'ancienne
+   règle `uuid4()` générait un UUID aléatoire à chaque tentative et provoquait des doublons
+   d'organisation. Le nœud **exige** `organization_id` dans le corps du `POST` (`400` sinon,
    constaté le 2026-10-15) et l'**honore tel quel** — c'est `demander_creation_organisation()`
-   qui génère cet UUID, l'appelant n'a rien à faire de spécial.
+   qui le calcule, l'appelant n'a rien à faire de spécial.
 3. **Ne pas appeler `linked-producers/request` explicitement.** Le portail génère
    automatiquement la tâche de rattachement du provider à la suite de la validation de la
    demande de création (vérifié en local ET en conditions réelles RM : une 2e tâche apparaît
@@ -123,7 +126,7 @@ Sans objet pour un nœud/portail externes réels (pas de conteneurs à notre cha
 ### `demander_mise_a_jour_organisation(conf, organization, image_id=None)` — ⚠️ CASSÉE, ne plus appeler
 
 **Signalée cassée par l'équipe RUDI elle-même (2026-10-15).** N'est plus appelée nulle part
-dans le flux normal (ni `publier_dataset()`, ni `enrichir_organisations.py`) — conservée
+dans le flux normal (ni `publier_dataset()`) — conservée
 uniquement au cas où un correctif côté RUDI la rendrait de nouveau utilisable. Une
 organisation doit désormais être complète **dès sa création**
 (`demander_creation_organisation()`) plutôt que de compter sur un enrichissement a

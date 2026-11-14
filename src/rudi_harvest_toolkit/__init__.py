@@ -15,7 +15,13 @@ Modules :
 - ``description`` : assemblage d'une description structurée (quoi/comment/variables/
   fréquence/source), pure mise en page sans connaissance du domaine.
 - ``rne`` : maire actuel d'une commune via le Répertoire National des Élus (source
-  officielle à jour, préférée à Wikidata pour une donnée qui change à chaque élection).
+  officielle à jour, préférée à Wikidata pour une donnée qui change à chaque élection) ;
+- ``datagouv`` : client générique de l'API data.gouv.fr (datasets + ressources) ;
+- ``download_cache`` : téléchargement HTTP en flux avec cache disque (clé = MD5 de l'URL, TTL) ;
+- ``fichier_hybride`` : média RUDI ``FILE`` hybride (empreinte distante + URL distante conservée) ;
+- ``geojson`` : assembleur GeoJSON par ligne, mise en page pure sans connaissance du domaine ;
+- ``http_dates`` : sonde best-effort de la date de dernière modification d'une ressource HTTP ;
+- ``tabular`` : lecture CSV en flux et filtrage générique « valeur de colonne == cible ».
 """
 
 from .commune import bbox_depuis_contour

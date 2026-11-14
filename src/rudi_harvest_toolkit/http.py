@@ -29,10 +29,7 @@ class _SessionAvecTimeout(requests.Session):
 session = _SessionAvecTimeout()
 session.mount("https://", _adapter)
 session.mount("http://", _adapter)
-session.headers["User-Agent"] = (
-    "rudi-harvest-toolkit/0.1.0 "
-    "(https://github.com/anomalyco/rudi-harvest-toolkit; contact@example.org)"
-)
+session.headers["User-Agent"] = "rudi-harvest-toolkit (https://github.com/simon-sg/rudi-harvest-toolkit)"
 
 
 def desactiver_verification_tls() -> None:

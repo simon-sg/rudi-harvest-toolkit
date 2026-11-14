@@ -110,11 +110,8 @@ def valider_code_insee(code_insee: object) -> str:
     return code
 
 
-def _statut_http(exception: Exception, reponse=None) -> int | None:
-    statut = getattr(getattr(exception, "response", None), "status_code", None)
-    if statut is None:
-        statut = getattr(reponse, "status_code", None)
-    return statut
+def _statut_http(exception: Exception) -> int | None:
+    return getattr(getattr(exception, "response", None), "status_code", None)
 
 
 def resoudre_commune(
@@ -150,7 +147,7 @@ def resoudre_commune(
     try:
         reponse.raise_for_status()
     except Exception as e:  # noqa: BLE001
-        statut = _statut_http(e, reponse)
+        statut = _statut_http(e)
         if statut == 404:
             raise CommuneIntrouvableError(
                 f"Aucune commune trouvée pour le code INSEE {code}."
@@ -217,7 +214,7 @@ def resoudre_siren_commune(
     try:
         reponse.raise_for_status()
     except Exception as e:  # noqa: BLE001
-        statut = _statut_http(e, reponse)
+        statut = _statut_http(e)
         raise ErreurReseauCommune(
             f"Réponse HTTP {statut or '?'} de {RECHERCHE_ENTREPRISES_API} pour la "
             f"commune {code} : {e}"

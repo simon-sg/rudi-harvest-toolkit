@@ -1,5 +1,4 @@
-"""Sonde best-effort de la date de dernière modification d'une ressource HTTP (v4
-de rudi-commune-starterkit, Axe 2).
+"""Sonde best-effort de la date de dernière modification d'une ressource HTTP.
 
 Indépendant de :func:`download_cache.telecharger` et de son cache — un simple
 sondage d'en-tête, jamais bloquant, jamais deviné. **Ne réutilise jamais**

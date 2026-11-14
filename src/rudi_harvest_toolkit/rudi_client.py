@@ -1166,7 +1166,7 @@ def _dedoublonner_medias_file(
     key » → rapport ERR-500) — le JDD repasse `refused` alors qu'il est déjà intégré.
 
     ``fichiers_filtres`` référence les médias FILE par position (les FILE sont toujours en
-    tête d'``available_formats``, cf. ``publish_rudi._fichiers_a_uploader``) : on garde la
+    tête d'``available_formats``) : on garde la
     première occurrence de chaque ``media_name`` et on n'émet que les chemins correspondants.
     Retourne ``(medias_dedoublonnes, fichiers_realignes)`` — les deux listes retournées
     peuvent être identiques aux entrées s'il n'y a aucun doublon.
