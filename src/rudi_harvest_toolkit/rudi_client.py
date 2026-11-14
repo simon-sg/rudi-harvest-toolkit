@@ -1103,7 +1103,7 @@ def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | 
               f"— validation modérateur nécessaire avant suppression.")
         return True
     except Exception as e:
-        if "409" in str(e):
+        if getattr(e, "status", None) == 409:
             print(f"  [RUDI] détachement producteur de l'organisation {organization_id[:12]}… déjà en attente de validation.")
             return True
         print(f"  [RUDI] AVERTISSEMENT : échec de la demande de détachement producteur : {e}")
@@ -1457,7 +1457,7 @@ def supprimer_organisation(conf: dict, org_id: str) -> bool:
         print(f"  [RUDI] organisation {org_id[:12]}… supprimée du nœud.")
         return True
     except Exception as e:
-        if "404" in str(e):
+        if getattr(e, "status", None) == 404:
             print(f"  [RUDI] organisation {org_id[:12]}… déjà absente du nœud (traité comme succès).")
             return True
         print(f"  [RUDI] Erreur suppression organisation {org_id[:12]}… : {e}")
@@ -1492,7 +1492,7 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
         print(f"  [RUDI] dataset {global_id[:12]}… supprimé du nœud.")
         return True
     except Exception as e:
-        if "404" in str(e):
+        if getattr(e, "status", None) == 404:
             print(f"  [RUDI] dataset {global_id[:12]}… déjà absent du nœud (traité comme succès).")
             return True
         print(f"  [RUDI] Erreur suppression {global_id[:12]}… : {e}")

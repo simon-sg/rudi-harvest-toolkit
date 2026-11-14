@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import requests
+from rudi_node_write.utils.err import HttpError
 
 from rudi_harvest_toolkit import rudi_client
 from rudi_harvest_toolkit.rudi_client import (
@@ -1176,7 +1177,7 @@ class TestDemanderDetachementProducteur(unittest.TestCase):
     def test_409_tache_deja_en_attente_retourne_true(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
-            creer.return_value.connector.request.side_effect = Exception("HTTP ERR 409 Conflict")
+            creer.return_value.connector.request.side_effect = HttpError("Conflict", status=409)
             self.assertTrue(demander_detachement_producteur(conf, "uuid-org"))
 
 
@@ -1309,13 +1310,13 @@ class TestSupprimerDataset(unittest.TestCase):
     def test_404_traite_comme_succes(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
-            creer.return_value.connector.del_catalog.side_effect = Exception("404 Not Found")
+            creer.return_value.connector.del_catalog.side_effect = HttpError("Not Found", status=404)
             self.assertTrue(supprimer_dataset(conf, "gid-1"))
 
     def test_autre_erreur_echoue(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
-            creer.return_value.connector.del_catalog.side_effect = Exception("500 panne")
+            creer.return_value.connector.del_catalog.side_effect = HttpError("panne", status=500)
             self.assertFalse(supprimer_dataset(conf, "gid-1"))
 
 
@@ -1329,13 +1330,13 @@ class TestSupprimerOrganisation(unittest.TestCase):
     def test_404_traite_comme_succes(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
-            creer.return_value.connector.delete_org_with_id.side_effect = Exception("404")
+            creer.return_value.connector.delete_org_with_id.side_effect = HttpError("Not Found", status=404)
             self.assertTrue(supprimer_organisation(conf, "org-1"))
 
     def test_autre_erreur_echoue(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client._creer_writer") as creer:
-            creer.return_value.connector.delete_org_with_id.side_effect = Exception("409 conflit")
+            creer.return_value.connector.delete_org_with_id.side_effect = HttpError("conflit", status=409)
             self.assertFalse(supprimer_organisation(conf, "org-1"))
 
 
