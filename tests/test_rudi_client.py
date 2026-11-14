@@ -223,7 +223,7 @@ class TestListerOrganisations(unittest.TestCase):
             self.assertEqual(lister_organisations(conf, statut="VALIDATED"), orgs)
         sess.get.assert_called_once_with(
             "http://n:3030/catalog/v1/organizations",
-            params={"organization_status": "VALIDATED"}, timeout=30,
+            params={"organization_status": "VALIDATED"}, timeout=10,
         )
 
 
@@ -244,7 +244,7 @@ class TestOrganisationParNom(unittest.TestCase):
             resultat = organisation_par_nom(self._CONF, "commune de geveze")
         self.assertEqual(resultat, orgs[0])
         sess.get.assert_called_once_with(
-            "http://n:3030/catalog/v1/organizations", timeout=30,
+            "http://n:3030/catalog/v1/organizations", timeout=10,
         )
 
     def test_absente_retourne_none(self):

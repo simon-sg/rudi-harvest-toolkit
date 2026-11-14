@@ -11,6 +11,26 @@ même avertissement et le même délai de connexion (5 s), 65 s perdues pour rie
 un run réel (2026-11-14). Résultat (succès comme échec) désormais mis en cache par
 URL catalog pour tout le run.
 
+### `rudi_client` — timeout abaissé sur les lookups d'organisation (30s → 10s)
+
+`lister_organisations(statut=...)`, `organisation_par_nom()`, `organisation_par_id()` :
+utilisaient le même timeout que les opérations lourdes (upload/push, 30s), alors
+qu'elles sont surtout appelées en garde-fou best-effort (rapprochement avant
+publication) — sur un nœud dont le catalog n'est pas joignable sur l'URL déduite,
+30s perdues pour un échec qui dégrade déjà proprement côté appelant.
+
+### `download_cache.telecharger()` — reprise partielle (Range) sur coupure de flux
+
+Une coupure réseau en cours de flux relançait jusqu'ici le téléchargement depuis le
+début à chaque tentative (3 fois) — observé en conditions réelles sur le
+téléchargement national DVF (609 Mo) : chaque tentative coupée au même point,
+probablement un proxy/pare-feu fermant les connexions longues après une durée
+fixe, que retenter sans reprise ne pouvait jamais dépasser. Les tentatives
+suivantes reprennent désormais depuis les octets déjà écrits (`Range`, avec
+`If-Range` sur l'`ETag`/`Last-Modified` de la 1ère réponse pour ne jamais reprendre
+sur un contenu changé entre-temps) ; repli automatique sur un téléchargement complet
+si le serveur ne renvoie pas `206`.
+
 ## 0.5.3 — 2026-11-13
 
 ### `rudi_client.demander_creation_organisation()` — `organization_id` déterministe

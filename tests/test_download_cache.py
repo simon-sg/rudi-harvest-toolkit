@@ -200,6 +200,79 @@ class TestTelecharger(unittest.TestCase):
         self.assertFalse(os.path.exists(chemin + ".tmp"))
         self.assertFalse(os.path.exists(chemin))
 
+    def test_coupure_puis_reprise_partielle_honoree_par_le_serveur(self):
+        """2026-11-14 : quand le serveur honore la reprise (206 + Range/If-Range),
+        la tentative suivante ne retélécharge que les octets manquants — pas tout
+        depuis le début."""
+        reponse_1 = mock.Mock()
+        reponse_1.status_code = 200
+        reponse_1.headers = {"ETag": '"abc123"'}
+        reponse_1.raise_for_status = mock.Mock()
+        reponse_1.close = mock.Mock()
+
+        def _flux_casse():
+            yield b"part1"
+            raise requests.exceptions.ConnectionError("Connection broken")
+
+        reponse_1.iter_content = mock.Mock(return_value=_flux_casse())
+
+        reponse_2 = mock.Mock()
+        reponse_2.status_code = 206
+        reponse_2.headers = {}
+        reponse_2.raise_for_status = mock.Mock()
+        reponse_2.close = mock.Mock()
+        reponse_2.iter_content = mock.Mock(return_value=iter([b"part2"]))
+
+        session = mock.Mock()
+        session.get.side_effect = [reponse_1, reponse_2]
+
+        with mock.patch("rudi_harvest_toolkit.download_cache.time.sleep"):
+            chemin = telecharger(
+                "https://exemple.fr/gros.csv", dossier=self.dossier, session_http=session,
+            )
+
+        with open(chemin, "rb") as f:
+            self.assertEqual(f.read(), b"part1part2")
+        self.assertEqual(session.get.call_count, 2)
+        _, kwargs_2e_appel = session.get.call_args_list[1]
+        self.assertEqual(
+            kwargs_2e_appel["headers"], {"Range": "bytes=5-", "If-Range": '"abc123"'},
+        )
+
+    def test_reprise_refusee_par_le_serveur_retelecharge_depuis_le_debut(self):
+        """Serveur qui ignore Range/If-Range (toujours 200, pas de support partiel) :
+        repli automatique sur un téléchargement complet, jamais un fichier corrompu
+        (ancien contenu + nouveau mélangés)."""
+        reponse_1 = mock.Mock()
+        reponse_1.status_code = 200
+        reponse_1.headers = {"ETag": '"abc123"'}
+        reponse_1.raise_for_status = mock.Mock()
+        reponse_1.close = mock.Mock()
+
+        def _flux_casse():
+            yield b"part1"
+            raise requests.exceptions.ConnectionError("Connection broken")
+
+        reponse_1.iter_content = mock.Mock(return_value=_flux_casse())
+
+        reponse_2 = mock.Mock()
+        reponse_2.status_code = 200  # pas 206 : le serveur ignore la reprise demandée
+        reponse_2.headers = {}
+        reponse_2.raise_for_status = mock.Mock()
+        reponse_2.close = mock.Mock()
+        reponse_2.iter_content = mock.Mock(return_value=iter([b"integral"]))
+
+        session = mock.Mock()
+        session.get.side_effect = [reponse_1, reponse_2]
+
+        with mock.patch("rudi_harvest_toolkit.download_cache.time.sleep"):
+            chemin = telecharger(
+                "https://exemple.fr/gros.csv", dossier=self.dossier, session_http=session,
+            )
+
+        with open(chemin, "rb") as f:
+            self.assertEqual(f.read(), b"integral")
+
 
 class TestPurgerEtInvalider(unittest.TestCase):
     def setUp(self):

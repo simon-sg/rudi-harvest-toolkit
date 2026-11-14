@@ -100,6 +100,16 @@ def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
     return r.status_code == 200
 
 
+# Timeout des 3 lookups "liste des organisations" ci-dessous (lister_organisations
+# avec statut, organisation_par_nom, organisation_par_id) : volontairement plus bas
+# que le timeout=30 des opérations lourdes (upload/push) du reste du module — un
+# nœud dont le catalog n'est pas joignable sur l'URL déduite (ex. url_catalog
+# auto-déduite sur un port fermé publiquement, observé en pratique le 2026-11-14)
+# ne doit pas faire attendre 30 s un garde-fou qui, de toute façon, dégrade
+# proprement à l'appelant en cas d'échec.
+_TIMEOUT_LISTE_ORGANISATIONS = 10
+
+
 def url_catalog(conf: dict) -> str:
     """URL de l'API catalog du nœud, sans slash final.
 
@@ -227,7 +237,8 @@ def lister_organisations(conf: dict, statut: str | None = None) -> list[dict]:
     if statut is None:
         return _creer_writer(conf).organization_list
     reponse = session.get(f"{url_catalog(conf)}/v1/organizations",
-                          params={"organization_status": statut}, timeout=30)
+                          params={"organization_status": statut},
+                          timeout=_TIMEOUT_LISTE_ORGANISATIONS)
     reponse.raise_for_status()
     return reponse.json()
 
@@ -249,7 +260,8 @@ def organisation_par_nom(conf: dict, organization_name: str) -> dict | None:
     (jamais avalée) — contrairement à :func:`demander_creation_organisation`, qui est
     best-effort par conception, cette fonction doit permettre à l'appelant de distinguer
     « organisation absente » d'« impossible de vérifier »."""
-    reponse = session.get(f"{url_catalog(conf)}/v1/organizations", timeout=30)
+    reponse = session.get(f"{url_catalog(conf)}/v1/organizations",
+                          timeout=_TIMEOUT_LISTE_ORGANISATIONS)
     reponse.raise_for_status()
     cible = normaliser_nom_colonne(organization_name)
     for organisation in reponse.json():
@@ -269,7 +281,8 @@ def organisation_par_id(conf: dict, organization_id: str) -> dict | None:
 
     Retourne le dict complet si trouvée, ``None`` sinon. Erreurs réseau/HTTP propagées
     (jamais avalées), comme :func:`organisation_par_nom`."""
-    reponse = session.get(f"{url_catalog(conf)}/v1/organizations", timeout=30)
+    reponse = session.get(f"{url_catalog(conf)}/v1/organizations",
+                          timeout=_TIMEOUT_LISTE_ORGANISATIONS)
     reponse.raise_for_status()
     for organisation in reponse.json():
         if organisation.get("organization_id") == organization_id:

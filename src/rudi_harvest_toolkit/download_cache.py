@@ -27,13 +27,13 @@ from .http import session
 TTL_JOURS_DEFAUT = 30
 _TAILLE_MORCEAU = 1024 * 1024
 _ENV_CACHE = "RUDI_HARVEST_CACHE"
-# Backlog rudi-commune-starterkit (fragilité #3, 2026-11-13) : une coupure réseau
-# EN COURS de flux (ConnectionError/ChunkedEncodingError, « Connection broken »,
-# observée en conditions réelles sur le téléchargement national DVF de 609 Mo) ne
-# déclenchait aucune reprise — seules les erreurs avant réception de la réponse HTTP
-# (429/5xx) étaient retentées ailleurs. Reprend depuis le début (pas de Range/resume :
-# demanderait de vérifier le support serveur + un ETag pour éviter de reprendre sur un
-# fichier changé entre-temps — hors scope ici, fonction partagée par ~10 modules).
+# Backlog rudi-commune-starterkit (fragilité #3, 2026-11-13 ; vue en conditions
+# réelles le 2026-11-14 sur le téléchargement national DVF de 609 Mo : 3 tentatives
+# depuis le début, chacune coupée au même point — probablement un proxy/pare-feu qui
+# ferme les connexions longues après une durée fixe, que retenter sans reprise ne
+# peut jamais dépasser). Une coupure EN COURS de flux (ConnectionError/
+# ChunkedEncodingError, « Connection broken ») retente désormais en reprise partielle
+# (``Range``/``If-Range``, voir :func:`telecharger`) plutôt que depuis le début.
 _MAX_TENTATIVES_FLUX = 3
 _PAUSE_ENTRE_TENTATIVES_S = 2
 
@@ -84,12 +84,17 @@ def telecharger(
       ne pas utiliser ce mode pour un fichier destiné à être publié.
 
     Lève :class:`ErreurTelechargement` sur échec réseau/HTTP, après nettoyage du
-    fichier temporaire. Aucune requête conditionnelle n'est envoyée.
+    fichier temporaire. Aucune requête conditionnelle n'est envoyée pour la fraîcheur
+    du cache (TTL sur mtime uniquement, voir plus haut).
 
     Une coupure réseau **en cours de flux** (``ConnectionError``/
     ``ChunkedEncodingError``, pas seulement un statut HTTP 429/5xx avant réception
-    de la réponse) déclenche jusqu'à :data:`_MAX_TENTATIVES_FLUX` tentatives — chacune
-    reprend le téléchargement depuis le début (pas de ``Range``/reprise partielle).
+    de la réponse) déclenche jusqu'à :data:`_MAX_TENTATIVES_FLUX` tentatives. Chaque
+    nouvelle tentative essaie de **reprendre** depuis les octets déjà écrits
+    (``Range: bytes=N-``, avec ``If-Range`` sur l'``ETag``/``Last-Modified`` de la
+    1ère réponse pour ne jamais reprendre sur un contenu changé entre-temps) ; si le
+    serveur ne renvoie pas ``206`` (pas de support ``Range``, ou ressource modifiée),
+    repli automatique et silencieux sur un téléchargement complet depuis le début.
     """
     chemin = chemin_cache(url, dossier)
     if os.path.exists(chemin):
@@ -105,17 +110,41 @@ def telecharger(
     os.makedirs(os.path.dirname(chemin), exist_ok=True)
     session_http = session_http or session
     chemin_tmp = chemin + ".tmp"
+    # Un .tmp orphelin d'un run précédent (process tué, pas une ConnectionError gérée
+    # ci-dessous) n'a pas de validateur associé dans CET appel : jamais pris pour une
+    # reprise valide, toujours effacé avant de commencer.
+    try:
+        os.remove(chemin_tmp)
+    except OSError:
+        pass
+
+    validateur: str | None = None
+    total = 0
 
     for tentative in range(1, _MAX_TENTATIVES_FLUX + 1):
+        deja_recus = total if tentative > 1 else 0
+        headers = {}
+        if deja_recus and validateur:
+            headers["Range"] = f"bytes={deja_recus}-"
+            headers["If-Range"] = validateur
         try:
-            reponse = session_http.get(url, stream=True, timeout=timeout)
-            reponse.raise_for_status()
+            reponse = session_http.get(url, stream=True, timeout=timeout, headers=headers)
+            if reponse.status_code != 206:
+                reponse.raise_for_status()
         except Exception as e:
             raise ErreurTelechargement(f"Échec du téléchargement de {url} : {e}") from e
 
-        total = 0
+        reprise = bool(headers.get("Range")) and reponse.status_code == 206
+        mode_ecriture = "ab" if reprise else "wb"
+        if not reprise:
+            total = 0
+            if validateur is None:
+                validateur = reponse.headers.get("ETag") or reponse.headers.get("Last-Modified")
+            elif verbose and deja_recus:
+                print("\n  Reprise refusée par le serveur — nouveau téléchargement complet.")
+
         try:
-            with open(chemin_tmp, "wb") as fichier:
+            with open(chemin_tmp, mode_ecriture) as fichier:
                 for morceau in reponse.iter_content(chunk_size=_TAILLE_MORCEAU):
                     if not morceau:
                         continue
@@ -129,16 +158,18 @@ def telecharger(
                         break
             os.replace(chemin_tmp, chemin)
         except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
+            # chemin_tmp conservé (pas supprimé) : la tentative suivante essaiera de
+            # reprendre à partir de ``total`` octets déjà écrits.
+            if tentative < _MAX_TENTATIVES_FLUX:
+                if verbose:
+                    print(f"\n  Connexion coupée en cours de flux ({e}) — nouvelle "
+                          f"tentative avec reprise ({tentative + 1}/{_MAX_TENTATIVES_FLUX})…")
+                time.sleep(_PAUSE_ENTRE_TENTATIVES_S)
+                continue
             try:
                 os.remove(chemin_tmp)
             except OSError:
                 pass
-            if tentative < _MAX_TENTATIVES_FLUX:
-                if verbose:
-                    print(f"\n  Connexion coupée en cours de flux ({e}) — nouvelle "
-                          f"tentative ({tentative + 1}/{_MAX_TENTATIVES_FLUX})…")
-                time.sleep(_PAUSE_ENTRE_TENTATIVES_S)
-                continue
             raise ErreurTelechargement(
                 f"Échec du téléchargement de {url} après {_MAX_TENTATIVES_FLUX} "
                 f"tentatives (connexion coupée en cours de flux à chaque fois) : {e}"
