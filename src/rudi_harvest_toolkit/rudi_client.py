@@ -434,6 +434,33 @@ def _vider_cache_token_portail() -> None:
     _CACHE_TOKENS_PORTAIL.clear()
 
 
+class IdentifiantsPortailAbsentsError(ValueError):
+    """``usr_portail``/``pwd_portail`` absents de ``conf`` — ces fonctionnalités (toute
+    demande directe au portail : création/mise à jour/archivage/détachement/suppression
+    d'organisation, téléversement d'image, lecture de l'état d'une tâche BPMN) exigent
+    un compte ROBOT **portail** dédié, distinct des identifiants du **nœud**
+    (``usr``/``pwd``). Bug réel corrigé le 2026-11-14 : avant, l'absence de
+    ``usr_portail``/``pwd_portail`` retombait silencieusement sur les identifiants du
+    nœud, qui ne sont presque jamais aussi des identifiants ROBOT portail valides — le
+    portail refusait alors l'authentification avec un ``401`` opaque, sans jamais dire
+    que la vraie cause était une configuration incomplète."""
+
+
+def _identifiants_portail(conf: dict) -> tuple[str, str]:
+    """``(usr_portail, pwd_portail)`` — lève :class:`IdentifiantsPortailAbsentsError` si
+    l'un des deux manque plutôt que de retomber silencieusement sur les identifiants du
+    nœud (voir la docstring de cette exception)."""
+    usr_portail = conf.get("usr_portail")
+    pwd_portail = conf.get("pwd_portail")
+    if not usr_portail or not pwd_portail:
+        raise IdentifiantsPortailAbsentsError(
+            "cette fonctionnalité nécessite usr_portail/pwd_portail (identifiants du "
+            "compte ROBOT portail, distincts des identifiants du nœud) dans la "
+            "configuration — absents ou incomplets."
+        )
+    return usr_portail, pwd_portail
+
+
 def _token_portail(url_portail: str, usr: str, pwd: str, *, forcer_renouvellement: bool = False) -> str:
     """Token OAuth2 (client_credentials) auprès du **portail** (pas le nœud), avec les
     identifiants du compte ROBOT — même pattern que
@@ -677,8 +704,7 @@ def televerser_piece_jointe(conf: dict, contenu: bytes, nom_fichier: str,
               f"({len(contenu)} octets > 10 Mo), téléversement ignoré")
         return None
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de téléversement d'image ({e})")
@@ -811,8 +837,7 @@ def demander_mise_a_jour_organisation(conf: dict, organization: dict,
         return False
 
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de mise à jour d'organisation envoyée ({e})")
@@ -959,8 +984,7 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     base = url_portail.rstrip("/")
 
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande d'archivage envoyée ({e})")
@@ -1058,8 +1082,7 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
             "existe encore côté portail"
         )
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
         r = session.get(f"{url_portail.rstrip('/')}/strukture/v1/organizations/{organization_id}",
                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
@@ -1184,8 +1207,7 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
     if not url_portail:
         return None
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression d'organisation envoyée ({e})")
@@ -1590,8 +1612,7 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     if not url_portail:
         return None
     try:
-        usr_portail = conf.get("usr_portail", conf["usr"])
-        pwd_portail = conf.get("pwd_portail", conf["pwd"])
+        usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
         print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression portail de la ressource ({e})")

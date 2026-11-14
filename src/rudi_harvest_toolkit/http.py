@@ -49,6 +49,18 @@ def desactiver_verification_tls() -> None:
     Risque réel : une attaque de l'ordinateur au milieu pourrait alors intercepter
     identifiants et données sans que rien ne le signale. À n'appeler qu'après une
     confirmation explicite de l'utilisateur final (voir les appelants dans
-    rudi-commune-starterkit) — jamais par défaut, jamais sans confirmation."""
+    rudi-commune-starterkit) — jamais par défaut, jamais sans confirmation.
+
+    **Limite connue (documentée le 2026-11-14, pas corrigée — dépend d'une lib
+    tierce)** : n'affecte QUE cette ``session`` ``requests`` partagée (appels
+    annexes : résolution commune/SIREN, Wikipédia, data.gouv.fr, INSEE...). Le vrai
+    chemin de publication/catalogue vers le nœud RUDI (``rudi_node_write``, lib
+    tierce) passe par ``http.client.HTTPSConnection`` brut, qui ne partage pas cette
+    session et n'expose aucun moyen de désactiver sa vérification TLS. Concrètement :
+    sur un nœud de test au certificat auto-signé, un utilisateur qui confirme
+    « ignorer le certificat » voit les appels annexes réussir, mais la publication
+    elle-même échouera quand même sur l'erreur TLS — cette fonction ne résout pas ce
+    cas précis malgré son nom. Corriger ça nécessiterait de patcher/contribuer à
+    ``rudi_node_write`` (hors de ce dépôt)."""
     session.verify = False
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
