@@ -2,6 +2,24 @@
 
 ## Non publié
 
+### Correction de bug — `etat_tache_organisation_portail()` 401 avec une identité PROVIDER pure
+
+- Utilisait `GET /strukture/v1/organizations/{uuid}`, réservé à
+  `ADMINISTRATOR`/`MODERATOR` côté portail (`@PreAuthorize`,
+  `OrganizationsController.getOrganization`) — 401 systématique avec une identité
+  PROVIDER pure (`usr_portail`/`pwd_portail`), confirmé en conditions réelles le
+  2026-11-15 en finalisant l'automatisation K2 de `starterkit-tester` (seule appelante
+  à ce jour). Route corrigée vers `GET /strukture/v1/organizations/request/{uuid}`
+  (`getNodeOrganization`, `@PreAuthorize(ADMINISTRATOR, PROVIDER)` — même route déjà
+  utilisée par `demander_archivage_organisation()`). Changement de forme du dict
+  retourné en conséquence : `{"organization_status", "linked_producer_status"}`
+  (`NodeOrganization`, scopé au provider courant) au lieu de `{"organization_status",
+  "functional_status", "status"}` (`Organization` complète) — `organization_status`
+  porte désormais directement `ARCHIVE_IN_PROGRESS` pendant une demande d'archivage en
+  attente, remplaçant l'ancien `status == "PENDING"`. `None` renvoyé sur `400` **et**
+  `404` (le service lève `AppServiceBadRequestException("Organization not found")`
+  une fois l'organisation sortie du scope de ce provider, pas une 404 classique).
+
 ### Documentation (pas de changement de comportement)
 
 - README/docstrings de `demander_archivage_organisation()`/

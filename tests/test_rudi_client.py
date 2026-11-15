@@ -856,11 +856,20 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
         sess.get.assert_not_called()
 
     def test_organisation_absente_du_portail_retourne_none(self):
-        """Confirmé en conditions réelles le 2026-11-14 : une organisation archivée et
-        validée disparaît de cette route (404) — c'est le signal utilisé pour détecter
-        qu'un archivage précédemment demandé a été validé."""
+        """Bug réel corrigé le 2026-11-16 : la route précédente
+        (GET /organizations/{uuid}) exige ADMINISTRATOR/MODERATOR, 401 systématique
+        avec une identité PROVIDER pure — confirmé en conditions réelles en finalisant
+        K2 de starterkit-tester. Route corrigée vers /organizations/request/{uuid}
+        (PROVIDER-accessible, même route déjà utilisée par
+        demander_archivage_organisation). Une fois l'archivage validé, l'organisation
+        sort du scope de recherche de ce provider et le service lève
+        AppServiceBadRequestException("Organization not found") — HTTP 400, pas 404 —
+        donc les deux codes sont traités comme « organisation disparue »."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self._session(sess, get_statut=400)
+            self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_statut=404)
             self.assertIsNone(etat_tache_organisation_portail(conf, "uuid-1"))
@@ -875,23 +884,26 @@ class TestEtatTacheOrganisationPortail(unittest.TestCase):
             with self.assertRaises(EtatPortailIndisponibleError):
                 etat_tache_organisation_portail(conf, "uuid-1")
 
-    def test_tache_en_attente_renvoie_le_statut_pending(self):
+    def test_archivage_en_attente_renvoie_archive_in_progress(self):
+        """``organization_status`` porte directement la valeur dérivée
+        ARCHIVE_IN_PROGRESS pendant qu'une demande d'archivage est en attente de
+        validation (NodeOrganizationMapper côté portail) — plus de champ
+        functional_status/status séparé depuis le changement de route (NodeOrganization,
+        pas Organization complète)."""
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
             self._session(sess, get_json={
-                "organizationStatus": "VALIDATED",
-                "functional_status": "En attente de validation",
-                "status": "PENDING",
+                "organization_status": "ARCHIVE_IN_PROGRESS",
+                "linked_producer_status": "DISENGAGED",
             })
             etat = etat_tache_organisation_portail(conf, "uuid-1")
         self.assertEqual(etat, {
-            "organization_status": "VALIDATED",
-            "functional_status": "En attente de validation",
-            "status": "PENDING",
+            "organization_status": "ARCHIVE_IN_PROGRESS",
+            "linked_producer_status": "DISENGAGED",
         })
         self.assertEqual(sess.get.call_args[0][0],
-                         "http://portail.test/strukture/v1/organizations/uuid-1")
+                         "http://portail.test/strukture/v1/organizations/request/uuid-1")
 
     def test_echec_reseau_leve_indisponible_pas_none(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",

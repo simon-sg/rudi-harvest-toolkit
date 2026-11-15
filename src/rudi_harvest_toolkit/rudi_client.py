@@ -811,18 +811,45 @@ class EtatPortailIndisponibleError(RuntimeError):
 
 def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | None:
     """Lit directement sur le **portail** (identité PROVIDER, ``usr_portail``/
-    ``pwd_portail``, jamais l'animateur) l'état de la dernière tâche BPMN
-    ``organization-process`` connue pour cette organisation : ``{"organization_status",
-    "functional_status", "status"}``. ``None`` si l'organisation n'existe plus côté
-    portail (confirmé le 2026-11-14 : une organisation réellement archivée + validée
-    disparaît de cette route, ``GET /strukture/v1/organizations/{uuid}`` renvoie alors
-    ``404``).
+    ``pwd_portail``, jamais l'animateur) l'état ``{"organization_status",
+    "linked_producer_status"}`` (``NodeOrganization``, mêmes clés/valeurs que
+    :func:`organisation_par_nom`) connu pour cette organisation **du point de vue de ce
+    provider**. ``None`` si l'organisation n'existe plus côté portail (archivage
+    validé — l'entité disparaît du résultat de recherche scopé provider, voir
+    ci-dessous).
+
+    **Bug réel corrigé le 2026-11-16** : utilisait ``GET
+    /strukture/v1/organizations/{uuid}`` (``OrganizationsController.getOrganization``),
+    réservé à ``ADMINISTRATOR``/``MODERATOR`` (``@PreAuthorize``,
+    ``rudi-portal-source/.../OrganizationsController.java:78``) — **401 systématique**
+    avec une identité PROVIDER pure, confirmée en conditions réelles le 2026-11-15 en
+    finalisant l'automatisation K2 de ``starterkit-tester`` (la vérification du
+    2026-11-14 avait dû tourner avec un compte aux rôles plus larges qu'un PROVIDER
+    strict, sans que cela ait été remarqué). Route corrigée vers ``GET
+    /strukture/v1/organizations/request/{uuid}``
+    (``OrganizationsController.getNodeOrganization``, ``@PreAuthorize(ADMINISTRATOR,
+    PROVIDER)`` — même route que la 1ère lecture faite par
+    :func:`demander_archivage_organisation` ci-dessus, qui fonctionnait déjà). Cette
+    route renvoie un ``NodeOrganization`` (scopé au provider courant via
+    ``NodeOrganizationSearchCriteria.providerUUID``), pas l'entité ``Organization``
+    complète — d'où le changement de forme du dict retourné (plus de
+    ``functional_status``/``status`` : ``organization_status`` porte déjà la valeur
+    dérivée ``ARCHIVE_IN_PROGRESS`` pendant qu'une demande d'archivage est en attente,
+    voir ``NodeOrganizationMapper`` côté portail).
+
+    L'organisation n'existe plus pour CE provider une fois l'archivage validé — son
+    ``LinkedProducer`` est détaché par ``archiveOrganization()``, donc elle sort du
+    scope de la recherche et le service lève ``AppServiceBadRequestException
+    ("Organization not found")`` (``OrganizationServiceImpl.getNodeOrganization``,
+    pas de 404 malgré le nom de l'exception — HTTP ``400``). Les deux codes (``400`` et
+    ``404``, au cas où une version du portail en renverrait un plus classique) sont
+    donc traités comme « organisation disparue », pas seulement ``404``.
 
     Lève :class:`EtatPortailIndisponibleError` dans tous les autres cas où l'état ne
     peut pas être déterminé (pas de ``url_portail`` configurée, échec réseau/auth, ou
-    code HTTP ni ``200`` ni ``404`` — ex. ``401``/``500`` transitoire) : un ``None``
-    dans ces cas-là serait confondu par l'appelant avec « organisation archivée », alors
-    qu'on ne sait tout simplement pas (l'organisation peut être toujours vivante côté
+    code HTTP inattendu — ex. ``401``/``500`` transitoire) : un ``None`` dans ces
+    cas-là serait confondu par l'appelant avec « organisation archivée », alors qu'on
+    ne sait tout simplement pas (l'organisation peut être toujours vivante côté
     portail) — voir ``vidage.vider_commune()`` côté starterkit, qui supprime la copie
     nœud uniquement sur un ``None`` confirmé.
 
@@ -835,15 +862,6 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     jour ``organization_status``/``linked_producer_status`` sur le nœud.
     ``organisation_par_nom()``/``etat_organisation()`` ne permettent donc jamais de
     savoir si un archivage a été validé — seule cette fonction le permet.
-
-    **Pourquoi ce champ précis** : ``status`` vaut ``"PENDING"`` tant qu'une tâche
-    ``organization-process`` est en cours (créée, pas encore validée/refusée) pour cette
-    organisation — observé en conditions réelles le 2026-11-14 (demande d'archivage
-    déposée, avant validation animateur). Utilisé pour éviter de redéposer une 2e
-    demande d'archivage en double tant que la 1ère est encore en attente (même risque
-    de doublon que pour la création d'organisation, voir
-    ``demander_creation_organisation()``) — ``POST /organizations/tasks`` ne vérifie lui-
-    même jamais l'absence d'une tâche déjà en cours avant d'en créer une nouvelle.
 
     **Même restriction d'identifiants que** :func:`demander_archivage_organisation` —
     nécessite ``conf["usr_portail"]``/``conf["pwd_portail"]`` (identité PROVIDER du
@@ -860,18 +878,18 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     try:
         usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
-        r = session.get(f"{url_portail.rstrip('/')}/strukture/v1/organizations/{organization_id}",
+        r = session.get(f"{url_portail.rstrip('/')}/strukture/v1/organizations/request/{organization_id}",
                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
-        if r.status_code == 404:
+        if r.status_code in (400, 404):
             return None
         if r.status_code != 200:
             raise EtatPortailIndisponibleError(
                 f"réponse HTTP {r.status_code} inattendue du portail pour l'organisation "
-                f"{organization_id[:12]}… (ni 200 ni 404)"
+                f"{organization_id[:12]}… (ni 200 ni 400/404)"
             )
         d = r.json()
-        return {"organization_status": d.get("organizationStatus"),
-                "functional_status": d.get("functional_status"), "status": d.get("status")}
+        return {"organization_status": d.get("organization_status"),
+                "linked_producer_status": d.get("linked_producer_status")}
     except EtatPortailIndisponibleError:
         raise
     except Exception as e:
