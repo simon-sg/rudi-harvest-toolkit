@@ -1,5 +1,18 @@
 # Changelog
 
+## Non publié
+
+### Documentation (pas de changement de comportement)
+
+- README/docstrings de `demander_archivage_organisation()`/
+  `etat_tache_organisation_portail()`/`IdentifiantsPortailAbsentsError` corrigés : ne
+  parlent plus de « compte ROBOT » (terme faux, source de confusion répétée — il
+  n'existe que 2 comptes dans tout ce schéma, l'utilisateur du nœud et l'animateur du
+  portail). `usr_portail`/`pwd_portail` sont les identifiants OAuth2 du raccordement
+  nœud↔portail lui-même (rôle `PROVIDER`), jamais un compte supplémentaire qu'un
+  utilisateur du nœud posséderait — précisé explicitement que ces 2 fonctions ne sont
+  donc plus appelées par `rudi-commune-starterkit` (voir son propre CHANGELOG).
+
 ## 0.5.9 — 2026-11-15 (revue de code, migration print() -> logging)
 
 ### Changement de comportement pour les appelants

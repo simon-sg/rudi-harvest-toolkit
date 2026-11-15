@@ -97,27 +97,32 @@ pipelines, pas un cas particulier.
    dans la file de modération sans action de notre part). Un appel explicite à ce stade
    échoue (`400 "Organization is not in a valid state"`, l'organisation n'étant pas encore
    validée).
-4. **Identifiants nœud ≠ identifiants portail.** Le login/mot de passe manager du
-   **nœud** (compte local) et les identifiants ROBOT du **portail** (compte ACL/OAuth2,
-   rôle `PROVIDER`) restent deux systèmes d'authentification distincts — `usr`/`pwd`
-   pour le nœud, `usr_portail`/`pwd_portail` pour le portail (repli sur `usr`/`pwd` si
-   absents, ce qui échoue systématiquement : un compte nœud n'est jamais aussi un
-   compte ACL portail).
+4. **Il n'existe que 2 comptes dans tout ce schéma : l'utilisateur du nœud
+   (`usr`/`pwd`) et l'animateur du portail qui valide les tâches BPMN.** `usr_portail`/
+   `pwd_portail` n'est **ni l'un ni l'autre** — ce sont les identifiants OAuth2 du
+   **raccordement nœud↔portail lui-même** (rôle `PROVIDER`), le secret technique que le
+   nœud utilise en interne, configuré une fois pour toutes par qui l'administre. Un
+   utilisateur du nœud ordinaire (celui que `rudi-commune-starterkit` vise, ex. un agent
+   municipal) n'y a jamais accès et ne doit jamais en être questionné.
 
-   **Correction du 2026-11-14, suite à un test réel de bout en bout — annule une
-   conclusion précédente de ce README.** Un appel portail direct (ex.
-   `demander_archivage_organisation()`, voir plus bas) n'est **pas** structurellement
-   impossible : les `401` observés jusqu'ici venaient de `usr_portail`/`pwd_portail`
-   **jamais réellement câblés** dans la config transmise par les appelants (silencieusement
-   repliés sur `usr`/`pwd` du nœud, qui n'est pas un compte OAuth2 portail), pas d'une
-   absence d'identifiants ACL portail chez ce toolkit — ces identifiants (compte
-   `PROVIDER` du nœud, déjà utilisé pour `demander_creation_organisation()`/
-   `demander_detachement_producteur()`) existent et fonctionnent dès qu'ils sont
-   effectivement transmis. `demander_suppression_organisation()` (DELETE direct,
-   endpoint `ADMINISTRATOR`/`PROVIDER` restreint) n'a pas été retesté avec les bons
-   identifiants et reste donc de statut inconnu — mais c'est sans objet en pratique :
-   `demander_archivage_organisation()` est la vraie route de suppression fonctionnelle
-   d'une organisation côté portail, voir sa section dédiée plus bas.
+   **Correction du 2026-11-15, suite à une relecture approfondie — précise la
+   correction du 2026-11-14 ci-dessous, qui avait suscité une confusion réelle.** Le
+   2026-11-14, un test de bout en bout avait confirmé qu'un appel portail direct (ex.
+   `demander_archivage_organisation()`, voir plus bas) **fonctionne mécaniquement** dès
+   que `usr_portail`/`pwd_portail` sont effectivement transmis (les `401` observés
+   jusque-là venaient d'un défaut de câblage, pas d'une impossibilité de principe) —
+   toujours vrai. Mais cela ne rend pas cet appel utilisable par
+   `rudi-commune-starterkit` : son public (un agent municipal, jamais l'administrateur
+   du nœud) n'a et n'aura jamais ces identifiants PROVIDER, qui ne sont « les mêmes que
+   `demander_creation_organisation()` » qu'au sens de l'identité utilisée côté portail —
+   pas au sens où l'appelant les posséderait de la même façon : `demander_creation_
+   organisation()` ne les demande **jamais**, le nœud les gère lui-même en interne
+   server-side ; `demander_archivage_organisation()`/`etat_tache_organisation_portail()`
+   les exigent en clair dans `conf`, ce qui n'est possible que pour qui administre le
+   nœud (ou un outil de test avec sa propre copie de ce secret, ex.
+   `starterkit-tester`, jamais en production). `rudi-commune-starterkit` ne les appelle
+   donc plus — voir sa propre doc (`vidage.py`) pour ce que ``vider_commune()`` fait à
+   la place une fois le détachement validé.
 
 ### `demander_creation_organisation(conf, organization)`
 
@@ -174,13 +179,14 @@ sans objet en pratique.** Contrairement à `supprimer_dataset_portail()` (datase
 la section suivante), il n'existe **aucun relais nœud** équivalent pour cette opération
 précise : le nœud ne relaie que les actes `attach`/`detach`/`has_task` pour les
 organisations, jamais la suppression (vérifié dans `rudi-catalog/src/routes/routes.js`,
-aucune route `delete` pour `portal/organizations/:id`). Mais ce n'est plus un problème :
-`demander_archivage_organisation()` (section dédiée plus bas) est la vraie route
-fonctionnelle de suppression d'organisation côté portail, confirmée de bout en bout le
-2026-11-14 — `rudi-commune-starterkit` l'utilise désormais, plus de confirmation
-manuelle dans l'UI Strukture. Fonction conservée ici pour compatibilité (d'autres
-appelants, ex. `moissonneuse-batteuse`) et au cas où l'appel direct serait un jour
-nécessaire.
+aucune route `delete` pour `portal/organizations/:id`, y compris sur la branche de
+production RM/R7). `demander_archivage_organisation()` (section dédiée plus bas)
+fonctionne mécaniquement pour cette opération, confirmé de bout en bout le 2026-11-14,
+mais exige les identifiants PROVIDER du raccordement nœud↔portail — jamais disponibles
+pour `rudi-commune-starterkit` (voir règle 4 plus haut), qui ne l'appelle donc **pas**.
+Fonction conservée ici pour compatibilité (d'autres appelants, ex.
+`moissonneuse-batteuse`) et au cas où l'appel direct serait un jour nécessaire pour qui
+administre effectivement le nœud.
 
 Contrairement à la création (tâche BPMN + validation modérateur), la suppression de
 l'organisation elle-même est appliquée **directement** (aucune validation côté Strukture).
@@ -206,15 +212,18 @@ redirection, donnant un faux succès) — trouvé en capturant le trafic réseau
 « détacher » de l'UI du nœud. Plus besoin de `url_portail`/identifiants portail séparés
 pour cette opération.
 
-### `demander_archivage_organisation(conf, organization_id, organization_name)` — la vraie route de suppression côté portail
+### `demander_archivage_organisation(conf, organization_id, organization_name)` — fonctionne, mais réservée à qui administre le nœud
 
 **Confirmée de bout en bout le 2026-11-14** (création d'une organisation disposable,
 détachement, validation, archivage, validation, vérification de l'état portail, puis
-nettoyage de la copie locale du nœud — aucun geste manuel) : c'est la méthode à utiliser
-pour faire disparaître une organisation côté portail (Strukture), remplaçant l'étape
-manuelle dans l'UI Strukture que `rudi-commune-starterkit` demandait jusqu'ici.
-**Identité `PROVIDER` du nœud** (`usr_portail`/`pwd_portail`), jamais un compte
-animateur — mêmes identifiants que `demander_creation_organisation()`.
+nettoyage de la copie locale du nœud — aucun geste manuel) : la mécanique marche. Mais
+**ce n'est plus la méthode utilisée par `rudi-commune-starterkit`** (correction du
+2026-11-15, voir règle 4 plus haut) : elle exige `usr_portail`/`pwd_portail`, les
+identifiants OAuth2 du raccordement nœud↔portail lui-même (rôle `PROVIDER`) — jamais
+un compte animateur, mais surtout jamais quelque chose qu'un simple utilisateur du nœud
+(le public de `rudi-commune-starterkit`) possède ou doit se voir demander. Utile pour
+qui administre réellement le nœud, ou pour un outil de test avec sa propre copie de ce
+secret (ex. `starterkit-tester`, jamais en production).
 
 **Prérequis, dans l'ordre :**
 1. Producteur détaché et détachement **validé** par un modérateur (voir

@@ -434,13 +434,26 @@ def _vider_cache_token_portail() -> None:
 
 
 class IdentifiantsPortailAbsentsError(ValueError):
-    """``usr_portail``/``pwd_portail`` absents de ``conf`` — ces fonctionnalités (toute
-    demande directe au portail : création/mise à jour/archivage/détachement/suppression
-    d'organisation, téléversement d'image, lecture de l'état d'une tâche BPMN) exigent
-    un compte ROBOT **portail** dédié, distinct des identifiants du **nœud**
-    (``usr``/``pwd``). Bug réel corrigé le 2026-11-14 : avant, l'absence de
-    ``usr_portail``/``pwd_portail`` retombait silencieusement sur les identifiants du
-    nœud, qui ne sont presque jamais aussi des identifiants ROBOT portail valides — le
+    """``usr_portail``/``pwd_portail`` absents de ``conf`` — ces fonctionnalités (appel
+    portail direct, hors relais nœud : archivage/détachement-legacy/suppression
+    d'organisation, lecture de l'état d'une tâche BPMN) exigent les identifiants OAuth2
+    **du raccordement nœud↔portail lui-même** (rôle ``PROVIDER``), pas un compte
+    supplémentaire que l'utilisateur du nœud posséderait en plus de son compte nœud.
+
+    **Il n'existe que 2 comptes dans tout ce schéma : l'utilisateur du nœud
+    (``usr``/``pwd``) et l'animateur du portail qui valide les tâches BPMN.** Ces
+    identifiants PROVIDER ne sont ni l'un ni l'autre — c'est le secret technique que le
+    nœud lui-même utilise en interne (configuré une fois, à l'installation du nœud, par
+    qui l'administre) pour s'authentifier auprès du portail quand il relaie une demande
+    (ex. ``demander_creation_organisation()``, qui ne les demande jamais à l'appelant :
+    le nœud les connaît déjà et s'en sert côté serveur). Un producteur/agent municipal
+    normal n'y a jamais accès et ne doit jamais en avoir besoin — seules les fonctions
+    qui n'ont **aucun** relais nœud disponible (voir leur docstring) retombent sur cet
+    appel portail direct, et ne sont donc utilisables que par qui administre le nœud
+    (ou un outil de test qui a sa propre copie de ce secret, ex. ``starterkit-tester``
+    en local, jamais en production). Bug réel corrigé le 2026-11-14 : avant, l'absence
+    de ``usr_portail``/``pwd_portail`` retombait silencieusement sur les identifiants du
+    nœud, qui ne sont jamais aussi des identifiants PROVIDER portail valides — le
     portail refusait alors l'authentification avec un ``401`` opaque, sans jamais dire
     que la vraie cause était une configuration incomplète."""
 
@@ -453,8 +466,9 @@ def _identifiants_portail(conf: dict) -> tuple[str, str]:
     pwd_portail = conf.get("pwd_portail")
     if not usr_portail or not pwd_portail:
         raise IdentifiantsPortailAbsentsError(
-            "cette fonctionnalité nécessite usr_portail/pwd_portail (identifiants du "
-            "compte ROBOT portail, distincts des identifiants du nœud) dans la "
+            "cette fonctionnalité nécessite usr_portail/pwd_portail (identifiants "
+            "PROVIDER du raccordement nœud↔portail, pas les identifiants du nœud — "
+            "voir la docstring de IdentifiantsPortailAbsentsError) dans la "
             "configuration — absents ou incomplets."
         )
     return usr_portail, pwd_portail
@@ -462,7 +476,7 @@ def _identifiants_portail(conf: dict) -> tuple[str, str]:
 
 def _token_portail(url_portail: str, usr: str, pwd: str, *, forcer_renouvellement: bool = False) -> str:
     """Token OAuth2 (client_credentials) auprès du **portail** (pas le nœud), avec les
-    identifiants du compte ROBOT — même pattern que
+    identifiants PROVIDER du raccordement nœud↔portail — même pattern que
     ``moissonneur-ods/portail_client.py::obtenir_token_robot()``, éprouvé contre le
     portail ROOB local. Lève une exception si le portail refuse (401 ``invalid_client``
     notamment, si ce compte n'est pas enregistré côté ACL comme client OAuth2 — vérifier
@@ -528,7 +542,7 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
     **Correction du 2026-10-14, suite à un test réel en conditions de production** :
     la version précédente de cette fonction appelait le portail directement
     (``POST {url_portail}/strukture/v1/organizations/request``) et exigeait donc des
-    identifiants ROBOT **portail** (``usr_portail``/``pwd_portail``) distincts des
+    identifiants PROVIDER **portail** (``usr_portail``/``pwd_portail``) distincts des
     identifiants **nœud**. Sur un nœud externe (démo RM), ces identifiants portail
     séparés n'existaient pas (`401 invalid_client`), alors que le compte nœud existant
     fonctionnait parfaitement pour la même opération via cette route.
@@ -713,6 +727,18 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     Retourne ``None`` si ``url_portail`` est absent, ``False`` en cas d'échec (auth,
     organisation inconnue du portail, refus, réseau ; journalisé), ``True`` si la demande
     a été déposée et démarrée (validation modérateur encore nécessaire).
+
+    **Nécessite ``conf["usr_portail"]``/``conf["pwd_portail"]`` (identité PROVIDER du
+    raccordement nœud↔portail, voir :class:`IdentifiantsPortailAbsentsError`) — un
+    simple utilisateur du nœud n'y a jamais accès.** Pas de relais nœud équivalent
+    disponible (``rudi-catalog/src/routes/routes.js`` ne relaie que
+    ``attach``/``detach``/``has_task`` pour les organisations, jamais l'archivage,
+    vérifié sur 3 branches dont celle de production RM/R7 le 2026-11-15). Conséquence :
+    **``rudi-commune-starterkit`` ne l'appelle plus** depuis cette vérification — un
+    agent municipal (le public visé par cet outil) n'a que son compte nœud, jamais ces
+    identifiants. Réservée à qui administre effectivement le nœud, ou à un outil de
+    test disposant de sa propre copie de ce secret (ex. ``starterkit-tester``, jamais en
+    production).
     """
     url_portail = conf.get("url_portail")
     if not url_portail:
@@ -818,6 +844,12 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     de doublon que pour la création d'organisation, voir
     ``demander_creation_organisation()``) — ``POST /organizations/tasks`` ne vérifie lui-
     même jamais l'absence d'une tâche déjà en cours avant d'en créer une nouvelle.
+
+    **Même restriction d'identifiants que** :func:`demander_archivage_organisation` —
+    nécessite ``conf["usr_portail"]``/``conf["pwd_portail"]`` (identité PROVIDER du
+    raccordement nœud↔portail, jamais disponible pour un simple utilisateur du nœud,
+    voir :class:`IdentifiantsPortailAbsentsError`). **``rudi-commune-starterkit`` ne
+    l'appelle plus** pour cette raison.
     """
     url_portail = conf.get("url_portail")
     if not url_portail:
@@ -920,7 +952,9 @@ def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | 
 def demander_suppression_organisation(conf: dict, organization_id: str) -> bool | None:
     """Demande la suppression d'une organisation productrice **auprès du portail**
     (``DELETE {url_portail}/strukture/v1/organizations/request/{uuid}``, rôle PROVIDER
-    requis — même compte ROBOT que ``demander_creation_organisation()``).
+    requis — même identité que ``demander_creation_organisation()``, mais contrairement
+    à elle, demandée ici directement à l'appelant plutôt que gérée en interne par le
+    nœud : voir :class:`IdentifiantsPortailAbsentsError`).
 
     Complète ``supprimer_organisation()``, qui ne supprime que la copie **locale** sur le
     nœud : sans cet appel, l'organisation reste présente dans l'UI Strukture / le
@@ -1313,7 +1347,7 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
 def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     """Supprime une ressource **côté portail** (Kalim) par son ``global_id``
     (``DELETE {url_portail}/kalim/v1/resources/{global_id}``, ``ResourcesController``
-    côté Kalim, authentification OAuth2 ROBOT directe au portail).
+    côté Kalim, authentification OAuth2 PROVIDER directe au portail).
 
     **Inutile dans le cas général, confirmé par le code source du nœud (2026-11-08)** :
     ``supprimer_dataset()`` (``DELETE {objectType}/{id}`` sur le nœud) déclenche déjà
@@ -1337,8 +1371,9 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     Elle reste ici portée depuis ``moissonneur-ods/portail_client.py::
     supprimer_ressources_portail()`` pour compatibilité (d'autres appelants l'utilisent
     encore) et pour le cas, non rencontré en pratique, où elle serait réellement utile :
-    un appel direct nécessite un compte ROBOT **enregistré côté ACL du portail comme
-    client OAuth2** (ex. un UUID dédié, voir la conf de moissonneuse-batteuse) — un
+    un appel direct nécessite les identifiants PROVIDER **enregistrés côté ACL du
+    portail comme client OAuth2** (ceux du raccordement nœud↔portail lui-même, ex. un
+    UUID dédié, voir la conf de moissonneuse-batteuse) — un
     compte nœud ordinaire (ex. ``usr``/``pwd`` d'un utilisateur du manager) y est
     toujours rejeté en ``401``, confirmé en conditions réelles : c'est ce ``401``, pas un
     bug de cette fonction, qui a fait découvrir que le relais automatique existait déjà.
