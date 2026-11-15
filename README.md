@@ -286,9 +286,9 @@ storage ne vérifie jamais qu'un `media_id` est encore référencé par une fich
 
 Une organisation créée via le circuit officiel passe par une tâche BPMN de validation
 modérateur (UI Strukture) ; tant qu'elle n'est pas validée, toute ressource qui la
-référence comme producteur est refusée par Kalim (`ERR-112`). Trois fonctions,
+référence comme producteur est refusée par Kalim (`ERR-112`). Deux fonctions,
 génériques (aucune dépendance à un projet en particulier), détectent les organisations
-nouvellement validées et isolent les ressources locales concernées :
+nouvellement validées :
 
 - `organisations_nouvellement_validees(conf, chemin_etat)` — compare les organisations à
   `organization_status: VALIDATED` côté nœud à un état persisté sur disque (JSON,
