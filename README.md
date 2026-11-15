@@ -15,7 +15,7 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.markdown` | `markdown_vers_html()` — conversion d'un sous-ensemble de Markdown en HTML (alimente `summary[].html`). Zéro dépendance. |
 | `rudi_harvest_toolkit.state` | `charger_etat()`, `sauvegarder_etat()`, `dataset_a_change()`, `construire_index_dossier()` — état d'incrémental, entièrement paramétré par chemin. |
 | `rudi_harvest_toolkit.http` | `session` — session `requests` mutualisée (pool de connexions + retry/backoff sur 429/5xx). |
-| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `supprimer_contact()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `organisation_par_nom(conf, organization_name)` (recherche par nom normalisé, garantit `organization_status`/`linked_producer_status` dans le résultat), `global_id_pour_local_id(conf, local_id)`, `demander_creation_organisation()`, `demander_mise_a_jour_organisation()`, `televerser_piece_jointe()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `demander_archivage_organisation()`, `etat_tache_organisation_portail()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()`/`ressources_pour_organisations()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin), `valider_alignement_medias(medias, fichiers_filtres)` (garde-fou d'ordre avant la boucle d'upload de `publier_dataset()` — vérifie que les médias `FILE` réellement à uploader précèdent les médias `FILE` hybrides déjà complets, pas seulement leur compte). |
+| `rudi_harvest_toolkit.rudi_client` | `charger_conf_rudi(chemin)`, `noeud_pret()`, `url_catalog()`, `publier_dataset()`, `supprimer_dataset()`, `supprimer_dataset_portail()`, `supprimer_organisation()`, `toutes_metadonnees_rudi()`, `lister_organisations(conf, statut=None)`, `organisation_par_nom(conf, organization_name)` (recherche par nom normalisé, garantit `organization_status`/`linked_producer_status` dans le résultat), `global_id_pour_local_id(conf, local_id)`, `demander_creation_organisation()`, `demander_detachement_producteur()`, `demander_suppression_organisation()`, `demander_archivage_organisation()`, `etat_tache_organisation_portail()`, `email_par_defaut()`, `organisations_nouvellement_validees()`/`marquer_organisations_traitees()` (détection d'orgs validées + état, voir « Renvoi après validation d'organisation »), `renvoyer_ressources_connues()` (renvoi sérialisé vers le portail via un PUT producteur normal — pas de route admin), `valider_alignement_medias(medias, fichiers_filtres)` (garde-fou d'ordre avant la boucle d'upload de `publier_dataset()` — vérifie que les médias `FILE` réellement à uploader précèdent les médias `FILE` hybrides déjà complets, pas seulement leur compte). |
 | `rudi_harvest_toolkit.publish` | `publier_si_configue(conf, rudi_metadata, fichiers_filtres)` + verrou de publication et suivi des `local_id` publiés dans le run. |
 | `rudi_harvest_toolkit.tabular` | `iter_lignes_csv(source)`, `filtrer_csv(source, colonne, valeur, prefixe=False)`, `lire_csv_filtre(...)` — lecteur CSV streaming (sniffing délimiteur/encodage, décompression gzip à la volée, résolution de colonne tolérante accents/casse) + filtre générique par valeur de colonne exacte ou par préfixe (`prefixe=True`, ex. SIRET filtré sur un SIREN). Généralise le moteur de parsing de `moissonneuse-batteuse/src/harvest_batch.py`, sans sa cascade Rennes Métropole à 8 niveaux. |
 | `rudi_harvest_toolkit.datagouv` | `get_dataset_metadata(id)`, `lister_ressources(id)`, `selectionner_ressource(..., index=/motif_nom=/la_plus_recente=, format=)` — client data.gouv.fr générique avec sélection explicite de ressource (au lieu du « premier match par format » de `moissonneuse-batteuse/src/connectors/datagouv.py`). |
@@ -123,47 +123,13 @@ dans `docker-compose-source.yml`, l'appel échoue **silencieusement** côté por
 log Java, jamais une erreur visible) — voir la section dédiée dans `REF_ENV_RUDI_LOCAL.md`.
 Sans objet pour un nœud/portail externes réels (pas de conteneurs à notre charge).
 
-### `demander_mise_a_jour_organisation(conf, organization, image_id=None)` — ⚠️ CASSÉE, ne plus appeler
-
-**Signalée cassée par l'équipe RUDI elle-même (2026-10-15).** N'est plus appelée nulle part
-dans le flux normal (ni `publier_dataset()`) — conservée
-uniquement au cas où un correctif côté RUDI la rendrait de nouveau utilisable. Une
-organisation doit désormais être complète **dès sa création**
-(`demander_creation_organisation()`) plutôt que de compter sur un enrichissement a
-posteriori. Le reste de cette section documente son fonctionnement **tel qu'il était
-censé marcher**, à titre d'archive :
-
-Met à jour une organisation **déjà connue du portail** (enrichissement
-`organization_summary`/caption/`organization_url`/logo d'un producteur préexistant) en
-passant par le **workflow BPMN officiel** `DRAFT_UPDATE` — le chemin direct
-(`PUT /organizations/request`) est bogué côté Strukture (remet à `null` des champs d'audit)
-et inutilisable.
-
-Enchaînement : `POST /organizations/tasks` (brouillon, `name`/`description` **requis** au
-niveau supérieur), réinjection du `form` dans `asset.form`, puis `PUT /organizations/tasks/start`.
-Le robot (rôle `PROVIDER`) ne peut pas auto-valider la tâche : **un modérateur doit valider la
-demande dans l'UI Strukture** pour que la modification soit appliquée
-(`publishOrganizationModification`). `description` est tronquée à **1024** caractères (validateur
-`MAXLENGTH`) ; `url` doit satisfaire le REGEXP `^(https?|ftp)://[a-zA-Z0-9.-]+(/\S*)?$` sinon elle
-est retirée. **Idempotent** : si le portail porte déjà la description voulue (et la même url) et
-qu'aucune image n'est fournie, aucune demande n'est déposée. L'`organization_id` doit être celui
-**assigné par le portail** (adopté à la création). **Best-effort**, retourne
-``True``/``False``/``None`` (``None`` = pas de `url_portail`, aucune requête).
-
-`image_id` (optionnel) : UUID d'une pièce jointe obtenu via `televerser_piece_jointe()`,
-transmis comme champ `organizationImage` du formulaire (logo du producteur, appliqué à la
-validation). Fournir une image **force** le dépôt même si description/url sont déjà à jour
-(le portail n'expose pas « a déjà un logo personnalisé » : la route média renvoie toujours
-*un* logo, par défaut le cas échéant) — à l'appelant de ne pas re-soumettre indéfiniment.
-
-### `televerser_piece_jointe(conf, contenu, nom_fichier, type_mime=None)`
-
-Téléverse une pièce jointe (image d'organisation) sur le portail :
-`POST {url_portail}/strukture/v1/attachments` (multipart, champ `file`, même compte ROBOT
-que les autres demandes). Retourne l'UUID d'attachement (``str``), à passer comme `image_id`
-de `demander_mise_a_jour_organisation()`. Le portail n'accepte que **jpeg/png, ≤ 10 Mo**
-(vérifié localement avant l'envoi). **Best-effort** : retourne ``None`` sans lever (pas de
-`url_portail`, type/taille invalide, auth échouée, refus, réseau).
+> `demander_mise_a_jour_organisation()` et `televerser_piece_jointe()` (enrichissement
+> *a posteriori* d'une organisation portail : description/url/logo via le workflow BPMN
+> `DRAFT_UPDATE`) ont été **retirées du code le 2026-11-15** — signalées cassées côté
+> portail par l'équipe RUDI dès le 2026-10-15, sans appelant réel depuis (voir
+> CHANGELOG.md). Une organisation doit désormais être complète **dès sa création**
+> (`demander_creation_organisation()`) plutôt que de compter sur un enrichissement a
+> posteriori.
 
 ### `supprimer_organisation(conf, org_id)` vs `demander_suppression_organisation(conf, organization_id)`
 
@@ -320,9 +286,9 @@ storage ne vérifie jamais qu'un `media_id` est encore référencé par une fich
 
 Une organisation créée via le circuit officiel passe par une tâche BPMN de validation
 modérateur (UI Strukture) ; tant qu'elle n'est pas validée, toute ressource qui la
-référence comme producteur est refusée par Kalim (`ERR-112`). Trois fonctions,
+référence comme producteur est refusée par Kalim (`ERR-112`). Deux fonctions,
 génériques (aucune dépendance à un projet en particulier), détectent les organisations
-nouvellement validées et isolent les ressources locales concernées :
+nouvellement validées :
 
 - `organisations_nouvellement_validees(conf, chemin_etat)` — compare les organisations à
   `organization_status: VALIDATED` côté nœud à un état persisté sur disque (JSON,
@@ -331,8 +297,6 @@ nouvellement validées et isolent les ressources locales concernées :
 - `marquer_organisations_traitees(chemin_etat, organisation_ids)` — à appeler **après**
   la tentative de renvoi (jamais avant), pour ne pas perdre la trace d'une organisation
   validée si le renvoi échoue en cours de route.
-- `ressources_pour_organisations(metadonnees, organisation_ids)` — filtre une liste de
-  métadonnées (ex. `toutes_metadonnees_rudi()`) sur `producer.organization_id`.
 
 Portée depuis `moissonneur-ods` (2026-10-11) pour être partagée le 2026-10-13, à la
 demande de son usage par `moissonneuse-batteuse`. Le renvoi lui-même est désormais unifié

@@ -342,13 +342,6 @@ def _organisations_traitees(chemin_etat: str) -> set[str]:
         return set()
 
 
-def ressources_pour_organisations(metadonnees: list[dict], organisation_ids: list[str]) -> list[dict]:
-    """Sous-ensemble de ``metadonnees`` dont ``producer.organization_id`` est dans
-    ``organisation_ids`` — les ressources à (re)pousser pour ces organisations."""
-    ids = set(organisation_ids)
-    return [m for m in metadonnees if (m.get("producer") or {}).get("organization_id") in ids]
-
-
 def renvoyer_ressources_connues(conf: dict, metadonnees: list[dict], pause_s: float = 2.0) -> dict:
     """Renvoie vers le portail des ressources déjà publiées sur CE nœud, en les RE-PUTant
     telles quelles sur la route producteur normale (``PUT /catalog/v1/resources`` via
@@ -634,282 +627,10 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
         return None
 
 
-# ---------------------------------------------------------------------------
-# Modification d'une organisation côté portail : workflow BPMN DRAFT_UPDATE
-# ---------------------------------------------------------------------------
-# Nombre maximal de caractères du champ « description » du formulaire
-# ``organization-process__DRAFT_UPDATE`` (section update-organization, validateur
-# MAXLENGTH). Le champ est *requis* : on tronque plutôt que de faire échouer toute la
-# demande (le nœud, lui, conserve la description intégrale).
-_TAILLE_MAX_DESCRIPTION_PORTAIL = 1024
-# Validateur REGEXP du champ « url » de la même section : une URL qui ne correspond pas
-# ferait échouer la demande (400). On la retire le cas échéant.
-_URL_PORTAIL_REGEX = re.compile(r"^(https?|ftp)://[a-zA-Z0-9.-]+(/\S*)?$")
-# Message déposé à l'attention du modérateur (champ requis de la section
-# update-message-to-moderator).
-_MESSAGE_MODERATEUR = "Mise à jour automatique de la fiche organisation (moissonneuse-batteuse)."
-
-# Champ « image » (logo) du formulaire : section image-organization.json, type ATTACHMENT.
-# Sa valeur est l'UUID d'une pièce jointe **préalablement téléversée** via
-# ``POST /strukture/v1/attachments`` (voir ``televerser_piece_jointe``). À la validation
-# (``publishOrganizationModification``), le portail lit cet UUID, récupère le fichier dans
-# doks et l'enregistre comme média LOGO du producteur.
-_CHAMP_IMAGE_ORGANISATION = "organizationImage"
-# Types acceptés (extendedType de image-organization.json) — le portail refuse le reste.
-_TYPES_IMAGE_ORGANISATION = ("image/jpeg", "image/png")
-# Taille maximale acceptée (10 Mo, comme le champ du portail).
-_TAILLE_MAX_IMAGE_PORTAIL = 10 * 1024 * 1024
-
-
 def _champ(nom: str, *valeurs: str) -> dict:
     """Champ au format attendu par le portail : ``values`` est une **liste** (et non
     ``value``) — un ``value`` scalaire est silencieusement ignoré et laisse le champ vide."""
     return {"definition": {"name": nom}, "values": list(valeurs)}
-
-
-def _champ_attachement(nom: str, uuid_piece_jointe: str) -> dict:
-    """Champ de type ``ATTACHMENT`` (valeur = UUID d'une pièce jointe téléversée).
-    ``FormHelper.fillMap`` stocke ``values[0]`` tel quel (branche ``default`` de
-    ``convertValue`` pour ce type) — donc une simple chaîne UUID suffit."""
-    return {"definition": {"name": nom, "type": "ATTACHMENT"}, "values": [uuid_piece_jointe]}
-
-
-def televerser_piece_jointe(conf: dict, contenu: bytes, nom_fichier: str,
-                            type_mime: str | None = None) -> str | None:
-    """Téléverse une pièce jointe (image d'organisation) sur le **portail** et retourne son
-    UUID d'attachement, à transmettre ensuite comme valeur du champ ``organizationImage``
-    d'un brouillon de mise à jour (``demander_mise_a_jour_organisation(..., image_id=...)``).
-
-    ``POST {url_portail}/strukture/v1/attachments`` (multipart, champ ``file``), rôle
-    PROVIDER requis — même compte ROBOT que les autres demandes. Renvoie ``201`` avec l'UUID
-    en corps. Le portail n'accepte que **jpeg/png, ≤ 10 Mo** (vérifié localement avant
-    l'envoi pour un message clair).
-
-    Nécessite ``conf["url_portail"]`` (optionnel — absent : no-op, ``None``). **Best-effort** :
-    ne lève jamais ; journalise et retourne ``None`` (type/taille invalide, auth échouée,
-    refus du portail, réseau).
-    """
-    url_portail = conf.get("url_portail")
-    if not url_portail:
-        return None
-    if not contenu:
-        print("  [RUDI] AVERTISSEMENT : image d'organisation vide, téléversement ignoré")
-        return None
-    if type_mime not in _TYPES_IMAGE_ORGANISATION:
-        print(f"  [RUDI] AVERTISSEMENT : type d'image non supporté par le portail ({type_mime}), "
-              f"téléversement ignoré (attendu : jpeg ou png)")
-        return None
-    if len(contenu) > _TAILLE_MAX_IMAGE_PORTAIL:
-        print(f"  [RUDI] AVERTISSEMENT : image d'organisation trop volumineuse "
-              f"({len(contenu)} octets > 10 Mo), téléversement ignoré")
-        return None
-    try:
-        usr_portail, pwd_portail = _identifiants_portail(conf)
-        token = _token_portail(url_portail, usr_portail, pwd_portail)
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de téléversement d'image ({e})")
-        return None
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        r = session.post(f"{url_portail.rstrip('/')}/strukture/v1/attachments",
-                         headers=headers,
-                         files={"file": (nom_fichier, contenu, type_mime)},
-                         timeout=60)
-        if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : téléversement d'image refusé par le portail "
-                  f"({r.status_code}) : {r.text[:200]}")
-            return None
-        try:
-            media_uuid = r.json()
-        except Exception:
-            media_uuid = r.text.strip().strip('"')
-        if isinstance(media_uuid, str) and media_uuid:
-            print(f"  [RUDI] image d'organisation téléversée (uuid={media_uuid})")
-            return media_uuid
-        print("  [RUDI] AVERTISSEMENT : réponse de téléversement d'image inattendue")
-        return None
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec du téléversement d'image : {e}")
-        return None
-
-
-def _formulaire_mise_a_jour(name: str, description: str, url: str | None,
-                            image_id: str | None = None) -> dict:
-    """Construit la valeur du champ ``form`` (type ``DRAFT_UPDATE``) d'un brouillon de
-    modification d'organisation. Seuls ``name`` et ``description`` (requis) sont toujours
-    transmis ; ``url`` n'est ajoutée que si elle est valide (sinon le validateur REGEXP
-    rejette la demande) ; ``image_id`` (UUID d'une pièce jointe téléversée) n'est ajouté que
-    s'il est fourni. Les champs absents ne sont pas touchés côté portail (les processors
-    name/description ne vident pas sur valeur nulle), donc inutile d'envoyer
-    email/téléphone/adresse que la moissonneuse ne gère pas."""
-    champs = [_champ("name", name), _champ("description", description)]
-    if url:
-        champs.append(_champ("url", url))
-    if image_id:
-        champs.append(_champ_attachement(_CHAMP_IMAGE_ORGANISATION, image_id))
-    return {
-        "type": "DRAFT_UPDATE",
-        "sections": [
-            {
-                "name": "organization-process-draft/update-message-to-moderator",
-                "fields": [_champ("updateMessageToModerator", _MESSAGE_MODERATEUR)],
-            },
-            {
-                "name": "organization-process-draft/update-organization",
-                "fields": champs,
-            },
-        ],
-    }
-
-
-def demander_mise_a_jour_organisation(conf: dict, organization: dict,
-                                      image_id: str | None = None) -> bool | None:
-    """Demande la mise à jour d'une organisation productrice **auprès du portail** en
-    passant par le **workflow BPMN officiel** ``DRAFT_UPDATE`` (rôle PROVIDER requis — même
-    compte ROBOT que ``demander_creation_organisation()``).
-
-    À la différence du ``PUT /organizations`` sur le **nœud** (que ``publier_dataset()``
-    fait par ailleurs pour que la copie locale de l'organisation, donc le ``producer`` de
-    la ressource publiée, reflète l'enrichissement immédiatement), cet appel met à jour
-    l'organisation **côté portail**. Sans lui, un enrichissement de ``organization_summary``
-    ou de ``organization_url`` reste invisible dans l'UI Strukture.
-
-    **Pourquoi le workflow BPMN et pas le ``PUT /organizations/request`` direct ?** Le
-    chemin direct (``OrganizationServiceImpl.updateOrganization``) est bogué : il réutilise
-    ``dtoToEntity`` sur un DTO partiel et remet à ``null`` des champs d'audit (openingDate,
-    creation_date, process_definition_key, status, functional_status, initiator) —
-    irréparable côté client (toujours 409/500, vérifié en conditions réelles). Le seul
-    circuit fonctionnel est celui de l'UI : déposer un brouillon de modification, que le
-    robot ne peut pas auto-valider (rôle PROVIDER, ``claim``/``do-it`` refusés en 400) —
-    **un modérateur doit valider la demande dans l'UI Strukture** pour que la modification
-    soit effectivement appliquée (``publishOrganizationModification``). Cette fonction ne
-    fait donc que *déposer* la demande ; elle retourne ``True`` dès que le portail l'a
-    acceptée, pas que la modification soit publiée.
-
-    Enchaînement (vérifié en réel) :
-      1. ``POST /organizations/tasks`` — crée le brouillon (asset = l'organisation, avec sa
-         ``name``/``description`` au niveau supérieur, **obligatoires** : le bean
-         ``Organization`` les valide ``@NotNull``) et un ``form`` de type ``DRAFT_UPDATE``
-         dont les sections portent les valeurs souhaitées (champ ``values`` = **liste**).
-      2. On réinjecte ce même ``form`` dans ``asset.form`` de la réponse (le portail ne le
-         renvoie pas tel quel).
-      3. ``PUT /organizations/tasks/start`` — démarre le process : ``organization_status``
-         de l'organisation étant ``VALIDATED``, le BPMN route vers la tâche de modification
-         (UserTask_3, groupe MODERATOR, statut fonctionnel « En attente de validation »).
-
-    La mise à jour ne peut porter que sur une organisation **déjà connue du portail** (et
-    validée) : l'``organization_id`` transmis doit être celui que le portail a assigné
-    (adopté à la création via ``demander_creation_organisation()``). Un id inconnu ferait
-    créer une *nouvelle* organisation brouillon — d'où la vérification préalable
-    ``GET /organizations/request/{uuid}`` (retour anticipé + ``False`` si 404).
-
-    Contraintes de champs du formulaire : ``name`` requis (≤ 100), ``description`` **requise**
-    (tronquée ici à ``_TAILLE_MAX_DESCRIPTION_PORTAIL`` = 1024) et ``url`` optionnelle mais
-    soumise au REGEXP ``_URL_PORTAIL_REGEX`` (retirée si non conforme) — sinon la demande
-    échoue en 400.
-
-    ``image_id`` (optionnel) : UUID d'une pièce jointe préalablement téléversée via
-    ``televerser_piece_jointe()`` — ajouté au formulaire comme champ ``organizationImage``
-    (logo du producteur, appliqué à la validation).
-
-    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
-    **Idempotent** : si le portail porte déjà la description voulue (et la même url
-    le cas échéant) **et qu'aucune image n'est fournie**, aucune demande n'est déposée —
-    indispensable puisque le nœud n'expose pas ``organization_url``, donc un test « à jour »
-    purement nœud ne peut pas fonctionner. Fournir ``image_id`` force au contraire le dépôt
-    (le portail n'expose pas l'info « a déjà un logo personnalisé » : la route média renvoie
-    toujours *un* logo, par défaut le cas échéant), à charge de l'appelant de ne pas
-    re-soumettre indéfiniment la même image. Retourne ``None`` si ``url_portail`` est absent
-    (no-op délibéré, aucune requête), ``False`` en cas d'échec (auth portail, organisation
-    inconnue, refus, réseau ; journalisé), ``True`` si le portail a accepté et démarré la
-    demande de modification (validation modérateur encore nécessaire) ou si rien n'était à
-    faire.
-    """
-    url_portail = conf.get("url_portail")
-    if not url_portail:
-        return None
-    base = url_portail.rstrip("/")
-
-    organization_id = organization.get("organization_id")
-    name = organization.get("organization_name")
-    if not organization_id or not name:
-        print("  [RUDI] AVERTISSEMENT : mise à jour d'organisation ignorée (organization_id ou organization_name manquant)")
-        return False
-
-    try:
-        usr_portail, pwd_portail = _identifiants_portail(conf)
-        token = _token_portail(url_portail, usr_portail, pwd_portail)
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de mise à jour d'organisation envoyée ({e})")
-        return False
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-    description = organization.get("organization_summary") or f"Organisation {name}"
-    if len(description) > _TAILLE_MAX_DESCRIPTION_PORTAIL:
-        description = description[:_TAILLE_MAX_DESCRIPTION_PORTAIL]
-    url = organization.get("organization_url")
-    if url and not _URL_PORTAIL_REGEX.match(url):
-        print(f"  [RUDI] AVERTISSEMENT : url d'organisation ignorée car non conforme au portail (« {url} »)")
-        url = None
-
-    try:
-        # L'organisation doit déjà exister côté portail : sinon createDraft en créerait
-        # une nouvelle (le workflow créerait un brouillon au lieu de modifier l'existante).
-        r = session.get(f"{base}/strukture/v1/organizations/request/{organization_id}",
-                        headers=headers, timeout=30)
-        if r.status_code != 200:
-            print(f"  [RUDI] AVERTISSEMENT : organisation « {name} » inconnue du portail "
-                  f"({r.status_code}), pas de mise à jour envoyée")
-            return False
-
-        # Idempotence : inutile de redéposer une demande si le portail porte déjà la
-        # description voulue et, le cas échéant, la même url. Important car le nœud
-        # n'expose pas ``organization_url`` (concept purement portail) : sans ce garde-fou,
-        # chaque passage redéposerait une demande de modification identique.
-        try:
-            org_portail = r.json()
-        except Exception:
-            org_portail = {}
-        # Comparaison d'url insensible à la barre finale (Wikidata renvoie souvent
-        # « .../ » là où le portail a « ... ») pour ne pas redéposer pour un slash.
-        url_portail_actuelle = (org_portail.get("organization_url") or "").rstrip("/")
-        url_voulue = (url or "").rstrip("/")
-        deja_a_jour = (org_portail.get("organization_summary") == description
-                       and (url is None or url_portail_actuelle == url_voulue)
-                       and image_id is None)
-        if deja_a_jour:
-            print(f"  [RUDI] organisation « {name} » déjà à jour sur le portail, aucune demande déposée")
-            return True
-
-        form = _formulaire_mise_a_jour(name, description, url, image_id)
-        brouillon = {
-            "uuid": organization_id,
-            "object_type": "Organization",
-            "name": name,
-            "description": description,
-            "form": form,
-        }
-        r = session.post(f"{base}/strukture/v1/organizations/tasks", json=brouillon,
-                         headers=headers, timeout=30)
-        if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : création du brouillon de mise à jour d'organisation refusée "
-                  f"par le portail ({r.status_code}) : {r.text[:200]}")
-            return False
-        tache = r.json()
-        tache.setdefault("asset", {})["form"] = form
-
-        r = session.put(f"{base}/strukture/v1/organizations/tasks/start", json=tache,
-                        headers=headers, timeout=30)
-        if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : démarrage de la demande de mise à jour d'organisation refusé "
-                  f"par le portail ({r.status_code}) : {r.text[:200]}")
-            return False
-        print(f"  [RUDI] demande de mise à jour portail déposée pour l'organisation « {name} » "
-              f"(en attente de validation modérateur)")
-        return True
-    except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec de la mise à jour portail de l'organisation : {e}")
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -958,7 +679,9 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     """Demande l'archivage d'une organisation **auprès du portail** (workflow BPMN
     ``DRAFT_ARCHIVE`` — même rôle/identité PROVIDER, même enchaînement ``POST
     /organizations/tasks`` → réinjection de ``form`` dans la réponse → ``PUT
-    /organizations/tasks/start`` que ``demander_mise_a_jour_organisation()``).
+    /organizations/tasks/start`` que l'ancien ``demander_mise_a_jour_organisation()``,
+    retiré du code le 2026-11-15 (cassé côté portail depuis le 2026-10-15, voir
+    CHANGELOG.md).
 
     Utile pour une organisation **orpheline du nœud** (supprimée côté manager, mais dont
     le portail garde encore la trace d'un relais de création antérieur) : à la différence
@@ -1526,21 +1249,6 @@ def supprimer_organisation(conf: dict, org_id: str) -> bool:
             print(f"  [RUDI] organisation {org_id[:12]}… déjà absente du nœud (traité comme succès).")
             return True
         print(f"  [RUDI] Erreur suppression organisation {org_id[:12]}… : {e}")
-        return False
-
-
-def supprimer_contact(conf: dict, contact_id: str) -> bool:
-    """
-    Supprime un contact du nœud RUDI par son contact_id.
-    Retourne True si la suppression a réussi.
-    """
-    writer = _creer_writer(conf)
-    try:
-        writer.connector.del_catalog(f"contacts/{contact_id}")
-        print(f"  [RUDI] contact {contact_id[:12]}… supprimé du nœud.")
-        return True
-    except Exception as e:
-        print(f"  [RUDI] Erreur suppression contact {contact_id[:12]}… : {e}")
         return False
 
 
