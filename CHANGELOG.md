@@ -13,23 +13,34 @@
   Seul le compteur de progression en flux direct (`download_cache.py`,
   `end="\r"`) reste un `print()` : une animation de ligne unique n'a pas
   d'équivalent `logging`.
-- **Conséquence pour tout appelant qui ne configure pas `logging`** :
-  `logging` n'affiche rien par défaut (contrairement à `print()`) — sans un
-  handler configuré sur le logger `rudi_harvest_toolkit` (ou la racine),
-  les messages de ce module (avertissements, erreurs de publication,
-  organisation créée...) **n'apparaîtront plus du tout**, silencieusement.
-  `rudi-commune-starterkit` configure ce handler dès sa version 0.7.3
-  (`_configurer_logging_toolkit()` dans `cli.py`, texte brut sur stdout,
-  équivalent exact à l'ancien comportement). **`moissonneuse-batteuse`
-  devra faire de même avant de monter sa propre épingle de dépendance vers
-  cette version ou une version ultérieure**, par exemple :
+- **Conséquence pour tout appelant qui ne configure pas `logging`** — et c'est plus
+  piégeux qu'un simple "silence total" : les messages `INFO` (statuts, progression)
+  sont bien perdus sans rien afficher, mais les `WARNING`/`ERROR` (échecs,
+  avertissements), eux, **ne disparaissent pas** — Python les affiche quand même sur
+  **stderr**, via son handler de secours interne (`logging.lastResort`), en texte
+  brut. Un appelant qui ne surveille/capture que stdout (script, cron, agent) perd
+  silencieusement ses avertissements, sans qu'un "plus rien ne s'affiche du tout"
+  flagrant ne l'alerte.
+
+  Pour retrouver le comportement `print()` d'avant (tout sur stdout, texte brut,
+  aucun doublon même en cas d'appel répété), utiliser le nouvel helper public
+  **`rudi_harvest_toolkit.console.configurer_sortie_console()`** plutôt que
+  configurer `logging` à la main :
   ```python
-  import logging, sys
-  h = logging.StreamHandler(sys.stdout)
-  h.setFormatter(logging.Formatter("%(message)s"))
-  logging.getLogger("rudi_harvest_toolkit").addHandler(h)
-  logging.getLogger("rudi_harvest_toolkit").setLevel(logging.INFO)
+  from rudi_harvest_toolkit.console import configurer_sortie_console
+  configurer_sortie_console()
   ```
+  Ne pas câbler `logging.StreamHandler`/`basicConfig` soi-même pour ça : sans
+  `propagate = False`, les messages apparaîtraient en double si l'application
+  configure par ailleurs `logging.basicConfig()` au niveau racine (cas fréquent), et
+  sans garde d'idempotence, un appel répété (ex. boucle de menu) empilerait un
+  handler par itération et démultiplierait chaque message.
+
+  `rudi-commune-starterkit` appelle cet helper en tout début de `main()` dès sa
+  version 0.7.3. **`moissonneuse-batteuse` devra faire de même avant de monter sa
+  propre épingle de dépendance vers cette version ou une version ultérieure**, sous
+  peine de perdre silencieusement les messages `INFO` du toolkit et de voir ses
+  avertissements migrer vers stderr sans prévenir.
 
 ## 0.5.8 — 2026-11-15 (revue de code, suppression de code mort)
 
