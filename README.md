@@ -28,6 +28,36 @@ exécutable), découplée de toute logique propre à Rennes Métropole.
 | `rudi_harvest_toolkit.description` | `construire_description_structuree(quoi=, comment_construit=, structure_variables=, frequence_maj=, source_label=, url_source=)` — assembleur de mise en page Markdown pur (quoi/comment construit/liste de variables/fréquence/source), sans connaissance du domaine ; lève `ValueError` si `structure_variables` est vide. |
 | `rudi_harvest_toolkit.http_dates` | `entete_derniere_modification(url)` (sonde HEAD/repli GET), `date_dataset_ods(explore_base_url)` (`metas.default.modified` Opendatasoft), `parser_date_iso_stricte(date_str)` — toutes retournent `None` sur échec/entrée non parsable, **jamais** une date inventée (contrairement à `pivot.parser_date_http()`). |
 | `rudi_harvest_toolkit.geojson` | `construire_feature_collection(lignes, champ_lon=, champ_lat=, proprietes=)` — FeatureCollection GeoJSON pure, un Point par ligne ayant des coordonnées exploitables (lignes invalides omises en silence, jamais `[lat, lon]` inversé) ; lève `AucuneGeometrieValide` si aucune Feature valide, `ColonneIntrouvableError` (réutilisée de `tabular`) si `champ_lon`/`champ_lat` introuvable. |
+| `rudi_harvest_toolkit.console` | `configurer_sortie_console(flux=)` — à appeler une fois par l'application appelante pour afficher les messages de ce module sur la console (voir « Sortie console (logging) » ci-dessous). |
+
+## Sortie console (logging)
+
+Ce module **n'écrit jamais lui-même sur stdout/stderr** : tous ses messages (statuts,
+avertissements, erreurs) passent par `logging` (`logging.getLogger("rudi_harvest_toolkit")`,
+un logger par sous-module). Une bibliothèque partagée par plusieurs applications ne doit
+pas décider unilatéralement d'écrire sur la console — c'est à l'application appelante de
+choisir (afficher, journaliser dans un fichier, ignorer).
+
+**Sans configuration explicite de votre côté, vous ne verrez pas ce que vous attendez** :
+`logging` n'a aucun handler par défaut, donc les messages `INFO` (statuts, progression)
+sont silencieusement perdus — mais les `WARNING`/`ERROR` (échecs), eux, ne disparaissent
+pas : Python les affiche quand même sur **stderr** via son handler de secours interne, en
+texte brut. Si votre application ne surveille que stdout, vous perdez vos avertissements
+sans vous en rendre compte.
+
+Pour retrouver l'ancien comportement `print()` (tout sur stdout, texte brut, pas de
+doublon même en cas d'appel répété) :
+
+```python
+from rudi_harvest_toolkit.console import configurer_sortie_console
+
+configurer_sortie_console()  # à appeler une fois, par ex. au début de votre main()
+```
+
+`rudi-commune-starterkit` fait exactement ça. Tout projet qui dépend de ce toolkit
+(ex. `moissonneuse-batteuse`) et veut conserver l'affichage console d'avant doit faire de
+même avant de monter son épingle de dépendance vers la version 0.5.9 ou une version
+ultérieure (voir CHANGELOG).
 
 ## Organisations productrices et validation portail
 

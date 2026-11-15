@@ -4,7 +4,10 @@ Ne contient volontairement aucun chemin implicite (``__file__``-relatif) : chaqu
 appelant fournit l'emplacement de son propre fichier d'état.
 """
 import json
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def charger_etat(chemin: str) -> dict:
@@ -15,7 +18,7 @@ def charger_etat(chemin: str) -> dict:
         with open(chemin, "r", encoding="utf-8") as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[state] {chemin} illisible ou corrompu ({e}), repart d'un état vide.")
+        logger.warning("[state] %s illisible ou corrompu (%s), repart d'un état vide.", chemin, e)
         return {}
 
 
