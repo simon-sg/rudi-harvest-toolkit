@@ -2,6 +2,24 @@
 
 ## Non publié
 
+### Nouveauté — résolution automatique des URLs catalogue/portail
+
+- `url_catalog(conf)` et la nouvelle fonction `resoudre_url_portail(conf)` déduisent
+  désormais `catalogPubUrl`/`portalUrl` depuis la route publique (sans
+  authentification) `GET {url}/manager/conf`, quand `url_catalog`/`url_portail` ne
+  sont pas explicitement fournis dans `conf` — vérifié en conditions réelles le
+  2026-11-15 sur une instance preprod et une instance locale. `url_catalog()` ne
+  retombe plus sur l'heuristique du port 3030 (fausse sur un nœud tiers) que si
+  cette détection échoue. `noeud_pret()` alimente ce même cache (`_cache_conf_manager`,
+  par URL de nœud) sur un 200, sans coût réseau supplémentaire.
+- `resoudre_url_portail()` ne déclenche en revanche **jamais elle-même de requête**
+  (elle ne lit le cache que s'il a déjà été rempli par `noeud_pret()`/`url_catalog()`
+  plus tôt dans le run) : ses 4 appelants (`demander_archivage_organisation`,
+  `etat_tache_organisation_portail`, `demander_suppression_organisation`,
+  `supprimer_dataset_portail`) restent garantis sans aucune requête réseau quand
+  `url_portail` n'est pas configurée — contrat testé explicitement (best-effort
+  délibéré, inchangé).
+
 ### Documentation (pas de changement de comportement)
 
 - README/docstrings de `demander_archivage_organisation()`/

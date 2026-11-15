@@ -89,7 +89,15 @@ def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
     en cas d'échec réseau — permet à l'appelant de distinguer un certificat TLS non
     reconnu (``requests.exceptions.SSLError``) d'un autre échec, pour éventuellement
     proposer de continuer sans vérification TLS (jamais par défaut). Absent en cas
-    d'échec sur un code HTTP != 200 (pas une exception)."""
+    d'échec sur un code HTTP != 200 (pas une exception).
+
+    Alimente aussi, sur un 200 au corps JSON exploitable, le cache de
+    :func:`_conf_manager` (``catalogPubUrl``/``portalUrl``...) — sans coût
+    supplémentaire puisque cette requête est déjà faite ici. Jamais l'inverse : un
+    échec ou un corps non JSON n'écrit rien dans ce cache (ne jamais figer un
+    négatif depuis ce point d'entrée précis, voir la note sur le délai de ~20 s
+    après un `podman start` ci-dessus — un échec transitoire ici ne doit pas priver
+    :func:`url_catalog` de sa propre tentative plus tard dans le run)."""
     url = conf["url"].rstrip("/") + "/manager/conf"
     try:
         r = session.get(url, timeout=5)
@@ -100,7 +108,14 @@ def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
         return False
     if r.status_code != 200:
         logger.warning("  [RUDI] %s a répondu %s (attendu 200).", url, r.status_code)
-    return r.status_code == 200
+        return False
+    try:
+        corps = r.json()
+        if isinstance(corps, dict):
+            _cache_conf_manager[conf["url"].rstrip("/")] = corps
+    except Exception:  # noqa: BLE001 - confort seulement, ne doit jamais faire échouer noeud_pret
+        pass
+    return True
 
 
 # Timeout des 3 lookups "liste des organisations" ci-dessous (lister_organisations
@@ -113,19 +128,87 @@ def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
 _TIMEOUT_LISTE_ORGANISATIONS = 10
 
 
+_cache_conf_manager: dict[str, dict | None] = {}
+
+
+def _conf_manager(conf: dict, *, permettre_requete: bool = True) -> dict | None:
+    """Récupère et met en cache (par URL de nœud, pour tout le run, succès comme
+    échec) le JSON renvoyé par la route publique ``/manager/conf`` — même route que
+    :func:`noeud_pret`, qui alimente aussi ce cache sur un 200 : ``catalogPubUrl``,
+    ``portalUrl``, ``storagePubUrl``... Vérifié en conditions réelles le 2026-11-15
+    sur une instance preprod et une instance locale, aucune authentification requise.
+
+    Confort seulement, jamais un pré-requis : ``None`` sur le moindre échec (nœud
+    injoignable, version trop ancienne sans cette route, réponse inattendue) —
+    chaque appelant doit garder son repli existant pour les nœuds non standard.
+
+    ``permettre_requete=False`` ne consulte que ce qui est déjà en cache (rempli par
+    un appel antérieur à :func:`noeud_pret` ou à cette même fonction) et ne déclenche
+    jamais lui-même de requête — utilisé par :func:`resoudre_url_portail` pour
+    préserver le contrat « no-op délibéré, aucune requête » de ses 3 appelants
+    (``demander_archivage_organisation``, ``demander_suppression_organisation``,
+    ``supprimer_dataset_portail``) quand ``url_portail`` n'est pas configurée."""
+    cle = conf["url"].rstrip("/")
+    if cle in _cache_conf_manager:
+        return _cache_conf_manager[cle]
+    if not permettre_requete:
+        return None
+    try:
+        r = session.get(f"{cle}/manager/conf", timeout=5)
+        r.raise_for_status()
+        corps = r.json()
+        if not isinstance(corps, dict):
+            raise ValueError(f"réponse inattendue (pas un objet JSON) : {type(corps).__name__}")
+        _cache_conf_manager[cle] = corps
+    except Exception as e:  # noqa: BLE001 - confort seulement, jamais bloquant
+        logger.debug("  [RUDI] /manager/conf indisponible sur %s (%s), pas de résolution auto.", cle, e)
+        _cache_conf_manager[cle] = None
+    return _cache_conf_manager[cle]
+
+
 def url_catalog(conf: dict) -> str:
     """URL de l'API catalog du nœud, sans slash final.
 
-    Prend `url_catalog` de la config si présent ; sinon dérive l'URL du manager sur
-    le port 3030 — la disposition de l'image Docker. Ce repli est faux dès qu'un nœud
-    n'est pas bâti sur cette image : le nœud source expose son catalog sur 4030, et
-    sans ce champ il irait interroger le catalog de son voisin (ou, celui-ci arrêté,
-    retomberait silencieusement sur la version par défaut).
+    Ordre de priorité : `url_catalog` explicite dans la config ; sinon `catalogPubUrl`
+    déduit de `/manager/conf` (voir :func:`_conf_manager`) ; sinon, en dernier
+    recours, l'URL du manager sur le port 3030 — la disposition de l'image Docker.
+    Ce dernier repli est faux dès qu'un nœud n'est pas bâti sur cette image : le nœud
+    source expose son catalog sur 4030, et sans ce champ ni cette détection il irait
+    interroger le catalog de son voisin (ou, celui-ci arrêté, retomberait
+    silencieusement sur la version par défaut).
     """
     if conf.get("url_catalog"):
         return conf["url_catalog"].rstrip("/")
+    manager_conf = _conf_manager(conf)
+    if manager_conf and manager_conf.get("catalogPubUrl"):
+        return manager_conf["catalogPubUrl"].rstrip("/")
     parsed = urlparse(conf["url"].rstrip("/"))
     return f"{parsed.scheme}://{parsed.hostname}:3030/catalog"
+
+
+def resoudre_url_portail(conf: dict) -> str | None:
+    """URL du portail rattaché au nœud, ou ``None`` si inconnue.
+
+    Ordre de priorité : `url_portail` explicite dans la config ; sinon `portalUrl`
+    déjà en cache suite à un appel antérieur à :func:`noeud_pret`/:func:`url_catalog`
+    (voir :func:`_conf_manager`, ``permettre_requete=False`` ici) — cette fonction
+    **ne déclenche jamais elle-même de requête** : ses 4 appelants
+    (``demander_archivage_organisation``, ``etat_tache_organisation_portail``,
+    ``demander_suppression_organisation``, ``supprimer_dataset_portail``) sont tous
+    documentés et testés comme n'émettant aucune requête réseau quand
+    ``url_portail`` n'est pas configurée (best-effort délibéré). Si aucun appel
+    antérieur n'a déjà rempli ce cache pour ce nœud, retombe silencieusement sur
+    ``None`` — mêmes garanties qu'avant cette résolution automatique.
+
+    Nommée différemment du paramètre local `url_portail` utilisé par ses appelants
+    pour éviter un `UnboundLocalError` si l'un d'eux faisait
+    `url_portail = url_portail(conf)` dans son propre scope."""
+    if conf.get("url_portail"):
+        return conf["url_portail"].rstrip("/")
+    manager_conf = _conf_manager(conf, permettre_requete=False)
+    if manager_conf and manager_conf.get("portalUrl"):
+        return manager_conf["portalUrl"].rstrip("/")
+    return None
 
 
 _cache_api_version: dict[str, str] = {}
@@ -723,7 +806,9 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     ``functional_status: ARCHIVED`` et disparaît du catalogue public et des listes de
     sélection.
 
-    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Résout l'URL portail via `resoudre_url_portail()` (`conf["url_portail"]`
+    explicite, sinon déduite de `/manager/conf`) — **Best-effort** : ne lève
+    jamais.
     Retourne ``None`` si ``url_portail`` est absent, ``False`` en cas d'échec (auth,
     organisation inconnue du portail, refus, réseau ; journalisé), ``True`` si la demande
     a été déposée et démarrée (validation modérateur encore nécessaire).
@@ -740,7 +825,7 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
     test disposant de sa propre copie de ce secret (ex. ``starterkit-tester``, jamais en
     production).
     """
-    url_portail = conf.get("url_portail")
+    url_portail = resoudre_url_portail(conf)
     if not url_portail:
         return None
     base = url_portail.rstrip("/")
@@ -819,7 +904,8 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     ``404``).
 
     Lève :class:`EtatPortailIndisponibleError` dans tous les autres cas où l'état ne
-    peut pas être déterminé (pas de ``url_portail`` configurée, échec réseau/auth, ou
+    peut pas être déterminé (``url_portail`` introuvable, ni configurée ni déduite du
+    nœud via :func:`resoudre_url_portail`, échec réseau/auth, ou
     code HTTP ni ``200`` ni ``404`` — ex. ``401``/``500`` transitoire) : un ``None``
     dans ces cas-là serait confondu par l'appelant avec « organisation archivée », alors
     qu'on ne sait tout simplement pas (l'organisation peut être toujours vivante côté
@@ -851,11 +937,11 @@ def etat_tache_organisation_portail(conf: dict, organization_id: str) -> dict | 
     voir :class:`IdentifiantsPortailAbsentsError`). **``rudi-commune-starterkit`` ne
     l'appelle plus** pour cette raison.
     """
-    url_portail = conf.get("url_portail")
+    url_portail = resoudre_url_portail(conf)
     if not url_portail:
         raise EtatPortailIndisponibleError(
-            "pas d'url_portail configurée — impossible de savoir si l'organisation "
-            "existe encore côté portail"
+            "url_portail introuvable (ni configurée, ni déduite du nœud) — impossible "
+            "de savoir si l'organisation existe encore côté portail"
         )
     try:
         usr_portail, pwd_portail = _identifiants_portail(conf)
@@ -992,13 +1078,15 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
     création via ``demander_creation_organisation()``) ; un id purement local
     (organisation créée seulement sur le nœud) répond ``404``.
 
-    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Résout l'URL portail via `resoudre_url_portail()` (`conf["url_portail"]`
+    explicite, sinon déduite de `/manager/conf`) — **Best-effort** : ne lève
+    jamais.
     Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
     ``False`` en cas d'échec (auth portail, refus 409/404, réseau ; journalisé), ``True``
     si le portail a accepté la suppression. Un ``401`` (token expiré) est rejoué une fois
     avec un token renouvelé.
     """
-    url_portail = conf.get("url_portail")
+    url_portail = resoudre_url_portail(conf)
     if not url_portail:
         return None
     try:
@@ -1396,12 +1484,14 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
     ``project_kalim_scheduler_lenteur``). Un ``401`` (token expiré) est rejoué une fois
     avec un token renouvelé.
 
-    Nécessite ``conf["url_portail"]`` (optionnel). **Best-effort** : ne lève jamais.
+    Résout l'URL portail via `resoudre_url_portail()` (`conf["url_portail"]`
+    explicite, sinon déduite de `/manager/conf`) — **Best-effort** : ne lève
+    jamais.
     Retourne ``None`` si ``url_portail`` est absent (no-op délibéré, aucune requête),
     ``False`` en cas d'échec (auth portail, refus, réseau ; journalisé), ``True`` si le
     portail a accepté la demande de suppression.
     """
-    url_portail = conf.get("url_portail")
+    url_portail = resoudre_url_portail(conf)
     if not url_portail:
         return None
     try:

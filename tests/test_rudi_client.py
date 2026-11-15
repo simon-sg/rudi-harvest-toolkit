@@ -34,9 +34,11 @@ from rudi_harvest_toolkit.rudi_client import (
     organisation_par_nom,
     organisations_nouvellement_validees,
     renvoyer_ressources_connues,
+    resoudre_url_portail,
     supprimer_dataset,
     supprimer_dataset_portail,
     supprimer_organisation,
+    url_catalog,
     valider_alignement_medias,
 )
 
@@ -54,11 +56,111 @@ class TestChargerConfRudi(unittest.TestCase):
             self.assertEqual(charger_conf_rudi(chemin), conf)
 
 
+class TestUrlCatalog(unittest.TestCase):
+    """GET {url}/manager/conf — route publique sans authentification, vérifiée en
+    conditions réelles le 2026-11-15 sur une instance preprod et une instance locale."""
+
+    def setUp(self):
+        rudi_client._cache_conf_manager.clear()
+
+    def test_url_catalog_explicite_prioritaire_sur_la_detection(self):
+        conf = {"url": "http://localhost:4032", "url_catalog": "http://explicite/catalog"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertEqual(url_catalog(conf), "http://explicite/catalog")
+        sess.get.assert_not_called()  # pas besoin de résoudre, la config suffit
+
+    def test_detecte_via_manager_conf_si_absent(self):
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200, json=lambda: {"catalogPubUrl": "https://x/catalog"})
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(url_catalog(conf), "https://x/catalog")
+
+    def test_mis_en_cache_un_seul_appel_pour_plusieurs_resolutions(self):
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200, json=lambda: {"catalogPubUrl": "https://x/catalog"})
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(url_catalog(conf), "https://x/catalog")
+            self.assertEqual(url_catalog(conf), "https://x/catalog")
+        self.assertEqual(sess.get.call_count, 1)
+
+    def test_detection_echoue_retombe_sur_heuristique_port_3030(self):
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.side_effect = requests.exceptions.ConnectionError("refusée")
+            self.assertEqual(url_catalog(conf), "http://localhost:3030/catalog")
+
+    def test_reponse_json_pas_un_objet_retombe_sur_heuristique_sans_crash(self):
+        # /manager/conf répondrait 200 avec un corps JSON valide mais inattendu
+        # (liste, chaîne...) : ne doit jamais faire planter url_catalog() avec un
+        # AttributeError sur .get() au lieu d'un repli propre.
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200, json=lambda: ["pas", "un", "dict"])
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(url_catalog(conf), "http://localhost:3030/catalog")
+
+    def test_reponse_sans_catalogpuburl_retombe_sur_heuristique(self):
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200, json=lambda: {"portalUrl": "https://x/portail"})
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertEqual(url_catalog(conf), "http://localhost:3030/catalog")
+
+    def test_profite_du_cache_deja_rempli_par_noeud_pret(self):
+        # noeud_pret() a déjà fait l'appel (ex. test de connexion du wizard avant
+        # toute publication) : url_catalog() ne doit pas en refaire un.
+        conf = {"url": "http://localhost:4032"}
+        rudi_client._cache_conf_manager["http://localhost:4032"] = {"catalogPubUrl": "https://x/catalog"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertEqual(url_catalog(conf), "https://x/catalog")
+        sess.get.assert_not_called()
+
+
+class TestResoudreUrlPortail(unittest.TestCase):
+    def setUp(self):
+        rudi_client._cache_conf_manager.clear()
+
+    def test_url_portail_explicite_prioritaire(self):
+        conf = {"url": "http://localhost:4032", "url_portail": "http://explicite"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertEqual(resoudre_url_portail(conf), "http://explicite")
+        sess.get.assert_not_called()
+
+    def test_jamais_de_requete_propre_meme_sans_url_portail(self):
+        # Contrat des 4 appelants (archivage/état-tâche/suppression/dataset-portail) :
+        # aucune requête réseau quand url_portail n'est pas configurée.
+        conf = {"url": "http://localhost:4032"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertIsNone(resoudre_url_portail(conf))
+        sess.get.assert_not_called()
+
+    def test_profite_du_cache_deja_rempli_par_noeud_pret_ou_url_catalog(self):
+        conf = {"url": "http://localhost:4032"}
+        rudi_client._cache_conf_manager["http://localhost:4032"] = {"portalUrl": "https://x/portail"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            self.assertEqual(resoudre_url_portail(conf), "https://x/portail")
+        sess.get.assert_not_called()
+
+    def test_cache_rempli_mais_sans_portalurl(self):
+        conf = {"url": "http://localhost:4032"}
+        rudi_client._cache_conf_manager["http://localhost:4032"] = {"catalogPubUrl": "https://x/catalog"}
+        self.assertIsNone(resoudre_url_portail(conf))
+
+    def test_cache_rempli_a_none_apres_echec_anterieur(self):
+        conf = {"url": "http://localhost:4032"}
+        rudi_client._cache_conf_manager["http://localhost:4032"] = None
+        self.assertIsNone(resoudre_url_portail(conf))
+
+
 class TestApiVersion(unittest.TestCase):
     def setUp(self):
         # _api_version met en cache par url_catalog — plusieurs tests ci-dessous
         # réutilisent volontairement la même URL, à isoler les uns des autres.
+        # url_catalog() lit aussi désormais _cache_conf_manager (même clé = conf["url"]).
         rudi_client._cache_api_version.clear()
+        rudi_client._cache_conf_manager.clear()
 
     def test_version_valide_retournee(self):
         conf = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
@@ -87,28 +189,38 @@ class TestApiVersion(unittest.TestCase):
 
     def test_mis_en_cache_apres_1_echec_pour_plusieurs_jdd(self):
         # Simule un run à 13 JDD sur un nœud dont le catalog n'est pas joignable sur
-        # l'URL déduite : 2 appels réseau (1 tentative + 1 retry avant de figer
-        # l'échec en cache) pour le 1er JDD, 0 pour les 12 suivants — pas 13 appels
-        # au total, c'est le bug corrigé le 2026-11-14 (65 s perdues en pratique).
+        # l'URL déduite : pour le 1er JDD, 1 tentative de résolution auto
+        # (/manager/conf, échoue aussi ici) + 1 tentative + 1 retry sur /version
+        # avant de figer l'échec en cache (3 appels), 0 pour les 12 suivants — pas
+        # 13x3 appels au total, c'est le bug corrigé le 2026-11-14 (65 s perdues en
+        # pratique) ; la résolution auto (chantier 2026-11-15) ajoute 1 seul appel
+        # borné de plus sur l'ensemble du run, jamais par JDD.
         conf = {"url": "http://localhost:4032"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
              mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
             sess.get.side_effect = ConnectionError("refusée")
             for _ in range(13):
                 self.assertEqual(_api_version(conf), "1.4.0")
-            self.assertEqual(sess.get.call_count, 2)
+            self.assertEqual(sess.get.call_count, 3)
 
     def test_echec_transitoire_recupere_par_le_retry(self):
-        # Un seul aléa de connexion sur le 1er essai ne doit pas figer la version
-        # par défaut pour tout le run si le 2e essai, lui, réussit.
+        # Un seul aléa de connexion sur le 1er essai /version ne doit pas figer la
+        # version par défaut pour tout le run si le 2e essai, lui, réussit. La
+        # résolution auto (/manager/conf, 1er appel) échoue aussi ici — sans
+        # incidence : url_catalog() retombe sur l'heuristique port 3030, et c'est
+        # bien le retry de _api_version lui-même (2e et 3e appels) qui est testé.
         conf = {"url": "http://localhost:4032"}
         reponse_ok = mock.Mock(text="2.0.0")
         reponse_ok.raise_for_status = mock.Mock()
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
              mock.patch("rudi_harvest_toolkit.rudi_client.time.sleep"):
-            sess.get.side_effect = [ConnectionError("refusée"), reponse_ok]
+            sess.get.side_effect = [
+                ConnectionError("refusée"),  # résolution auto /manager/conf
+                ConnectionError("refusée"),  # /version, 1ère tentative
+                reponse_ok,                   # /version, retry
+            ]
             self.assertEqual(_api_version(conf), "2.0.0")
-            self.assertEqual(sess.get.call_count, 2)
+            self.assertEqual(sess.get.call_count, 3)
 
     def test_cache_distinct_par_url_catalog(self):
         conf_a = {"url": "http://localhost:4032", "url_catalog": "http://localhost:4030/catalog"}
@@ -126,11 +238,44 @@ class TestApiVersion(unittest.TestCase):
 
 
 class TestNoeudPret(unittest.TestCase):
+    def setUp(self):
+        # noeud_pret() alimente désormais _cache_conf_manager (même URL que
+        # TestApiVersion/TestUrlCatalog réutilisent par ailleurs) — isoler comme
+        # pour _cache_api_version (voir TestApiVersion.setUp).
+        rudi_client._cache_conf_manager.clear()
+
     def test_reponse_200_pret(self):
         conf = {"url": "http://localhost:4032"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
-            sess.get.return_value = mock.Mock(status_code=200)
+            sess.get.return_value = mock.Mock(status_code=200, json=lambda: {"catalogPubUrl": "x"})
             self.assertTrue(noeud_pret(conf))
+
+    def test_reponse_200_alimente_le_cache_conf_manager(self):
+        # Pas de requête supplémentaire payée par url_catalog()/resoudre_url_portail()
+        # ensuite pour ce même nœud, dans le même run — voir leur docstring.
+        conf = {"url": "http://localhost:4032"}
+        corps = {"catalogPubUrl": "https://x/catalog", "portalUrl": "https://x/portail"}
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = mock.Mock(status_code=200, json=lambda: corps)
+            noeud_pret(conf)
+        self.assertEqual(rudi_client._cache_conf_manager["http://localhost:4032"], corps)
+
+    def test_reponse_200_corps_non_json_ne_fait_pas_echouer_noeud_pret(self):
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200)
+        reponse.json.side_effect = ValueError("not json")
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertTrue(noeud_pret(conf))
+        self.assertNotIn("http://localhost:4032", rudi_client._cache_conf_manager)
+
+    def test_reponse_200_corps_json_pas_un_objet_ne_pollue_pas_le_cache(self):
+        conf = {"url": "http://localhost:4032"}
+        reponse = mock.Mock(status_code=200, json=lambda: ["pas", "un", "dict"])
+        with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
+            sess.get.return_value = reponse
+            self.assertTrue(noeud_pret(conf))
+        self.assertNotIn("http://localhost:4032", rudi_client._cache_conf_manager)
 
     def test_reponse_non_200_pas_pret_sans_exception_sortie(self):
         conf = {"url": "http://localhost:4032"}
@@ -141,6 +286,10 @@ class TestNoeudPret(unittest.TestCase):
         # Pas une exception : rien à distinguer pour l'appelant (ex. pas de
         # proposition d'ignorer la vérification TLS, qui n'aurait aucun sens ici).
         self.assertNotIn("exception", erreur)
+        # Un 500 transitoire (ex. juste après un podman start, voir la docstring de
+        # noeud_pret) ne doit jamais figer un cache négatif qui priverait
+        # url_catalog()/resoudre_url_portail() de leur propre tentative plus tard.
+        self.assertNotIn("http://localhost:4032", rudi_client._cache_conf_manager)
 
     def test_exception_reseau_remontee_dans_erreur_sortie(self):
         conf = {"url": "http://localhost:4032"}
@@ -757,6 +906,11 @@ class TestDemanderCreationOrganisation(unittest.TestCase):
 
 
 class TestDemanderArchivageOrganisation(unittest.TestCase):
+    def setUp(self):
+        # resoudre_url_portail() lit _cache_conf_manager (même URL que d'autres
+        # classes de ce fichier) — isoler comme pour _cache_api_version.
+        rudi_client._cache_conf_manager.clear()
+
     def _session(self, sess, get_statut=200, get_json=None, create_statut=200,
                  create_corps=None, start_statut=200):
         rep_token = mock.Mock(status_code=200)
@@ -837,6 +991,9 @@ class TestDemanderArchivageOrganisation(unittest.TestCase):
 
 
 class TestEtatTacheOrganisationPortail(unittest.TestCase):
+    def setUp(self):
+        rudi_client._cache_conf_manager.clear()
+
     def _session(self, sess, get_statut=200, get_json=None):
         rep_token = mock.Mock(status_code=200)
         rep_token.json.return_value = {"access_token": "tok123"}
@@ -950,6 +1107,9 @@ class TestDemanderDetachementProducteur(unittest.TestCase):
 
 
 class TestDemanderSuppressionOrganisation(unittest.TestCase):
+    def setUp(self):
+        rudi_client._cache_conf_manager.clear()
+
     def test_sans_url_portail_no_op_sans_requete(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
@@ -1016,6 +1176,9 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
 
 
 class TestSupprimerDatasetPortail(unittest.TestCase):
+    def setUp(self):
+        rudi_client._cache_conf_manager.clear()
+
     def test_sans_url_portail_no_op_sans_requete(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess:
