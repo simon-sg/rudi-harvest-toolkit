@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.8 — 2026-11-15 (revue de code, suppression de code mort)
+
+### Nettoyage
+
+- `demander_mise_a_jour_organisation()`, `televerser_piece_jointe()` (et leurs
+  helpers internes `_formulaire_mise_a_jour`/`_champ_attachement`,
+  `_CHAMP_IMAGE_ORGANISATION`, `_TAILLE_MAX_DESCRIPTION_PORTAIL`,
+  `_URL_PORTAIL_REGEX`, `_MESSAGE_MODERATEUR`, `_TYPES_IMAGE_ORGANISATION`,
+  `_TAILLE_MAX_IMAGE_PORTAIL`) : mécanisme d'enrichissement *a posteriori*
+  d'une organisation portail (description/url/logo via le workflow BPMN
+  `DRAFT_UPDATE`), signalé cassé côté portail par l'équipe RUDI dès le
+  2026-10-15 et sans appelant réel depuis (ni dans ce dépôt, ni dans
+  `rudi-commune-starterkit`, ni dans `moissonneuse-batteuse`) — supprimé.
+- `ressources_pour_organisations()`, `supprimer_contact()` : sans appelant
+  réel confirmé dans les trois dépôts — supprimés.
+- Toutes les autres fonctions candidates à la suppression lors de la revue
+  (`demander_archivage_organisation`, `etat_tache_organisation_portail`,
+  `EtatPortailIndisponibleError`, `global_id_pour_local_id`,
+  `organisation_par_nom`, `organisation_par_id`, `valider_alignement_medias`)
+  ont été **vérifiées activement utilisées** (par `rudi-commune-starterkit`
+  ou en interne par ce module) — conservées.
+
 ## 0.5.7 — 2026-11-14 (revue de code, points d'arbitrage)
 
 ### Sécurité / fiabilité
