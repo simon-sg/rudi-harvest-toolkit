@@ -1,6 +1,6 @@
 # Changelog
 
-## Non publié
+## 0.6.0 — 2026-11-15 (résolution automatique des URLs catalogue/portail)
 
 ### Correction de bug — `etat_tache_organisation_portail()` 401 avec une identité PROVIDER pure
 
