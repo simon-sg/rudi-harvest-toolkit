@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.9 — 2026-11-15 (revue de code, migration print() -> logging)
+
+### Changement de comportement pour les appelants
+
+- Tous les `print()` de ce module (statuts, avertissements, erreurs —
+  `rudi_client.py`, `publish.py`, `state.py`, `download_cache.py`) sont
+  remplacés par des appels à un logger de module (`logging.getLogger(__name__)`,
+  namespace `rudi_harvest_toolkit`). Une bibliothèque partagée ne devrait pas
+  décider unilatéralement d'écrire sur stdout — c'est à l'application
+  appelante de choisir (afficher, journaliser dans un fichier, ignorer).
+  Seul le compteur de progression en flux direct (`download_cache.py`,
+  `end="\r"`) reste un `print()` : une animation de ligne unique n'a pas
+  d'équivalent `logging`.
+- **Conséquence pour tout appelant qui ne configure pas `logging`** :
+  `logging` n'affiche rien par défaut (contrairement à `print()`) — sans un
+  handler configuré sur le logger `rudi_harvest_toolkit` (ou la racine),
+  les messages de ce module (avertissements, erreurs de publication,
+  organisation créée...) **n'apparaîtront plus du tout**, silencieusement.
+  `rudi-commune-starterkit` configure ce handler dès sa version 0.7.3
+  (`_configurer_logging_toolkit()` dans `cli.py`, texte brut sur stdout,
+  équivalent exact à l'ancien comportement). **`moissonneuse-batteuse`
+  devra faire de même avant de monter sa propre épingle de dépendance vers
+  cette version ou une version ultérieure**, par exemple :
+  ```python
+  import logging, sys
+  h = logging.StreamHandler(sys.stdout)
+  h.setFormatter(logging.Formatter("%(message)s"))
+  logging.getLogger("rudi_harvest_toolkit").addHandler(h)
+  logging.getLogger("rudi_harvest_toolkit").setLevel(logging.INFO)
+  ```
+
 ## 0.5.8 — 2026-11-15 (revue de code, suppression de code mort)
 
 ### Nettoyage

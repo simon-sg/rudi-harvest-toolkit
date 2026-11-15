@@ -9,6 +9,7 @@ La configuration du nœud est désormais chargée depuis un **chemin explicite**
 (``charger_conf_rudi(chemin)``) et non plus depuis un répertoire dérivé de ``__file__``.
 """
 import json
+import logging
 import os
 import re
 import time
@@ -23,6 +24,8 @@ from rudi_node_write.rudi_types.rudi_meta import RudiMetadata
 
 from .http import desactiver_verification_tls, session
 from .tabular import normaliser_nom_colonne
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -91,12 +94,12 @@ def noeud_pret(conf: dict, erreur_sortie: dict | None = None) -> bool:
     try:
         r = session.get(url, timeout=5)
     except Exception as e:  # noqa: BLE001 - diagnostic volontairement générique
-        print(f"  [RUDI] Impossible de contacter {url} : {type(e).__name__}: {e}")
+        logger.warning("  [RUDI] Impossible de contacter %s : %s: %s", url, type(e).__name__, e)
         if erreur_sortie is not None:
             erreur_sortie["exception"] = e
         return False
     if r.status_code != 200:
-        print(f"  [RUDI] {url} a répondu {r.status_code} (attendu 200).")
+        logger.warning("  [RUDI] %s a répondu %s (attendu 200).", url, r.status_code)
     return r.status_code == 200
 
 
@@ -155,7 +158,10 @@ def _api_version(conf: dict) -> str:
             return _cache_api_version[cle]
         except Exception as e:
             derniere_erreur = e
-    print(f"  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API ({derniere_erreur}), valeur par défaut 1.4.0 utilisée.")
+    logger.warning(
+        "  [RUDI] AVERTISSEMENT : impossible de récupérer la version de l'API (%s), "
+        "valeur par défaut 1.4.0 utilisée.", derniere_erreur,
+    )
     _cache_api_version[cle] = "1.4.0"
     return "1.4.0"
 
@@ -600,11 +606,16 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
             body=corps, headers=writer.connector._id_headers)
         org_id = resultat.get("organization_id") if isinstance(resultat, dict) else None
         if not org_id:
-            print(f"  [RUDI] AVERTISSEMENT : création d'organisation sur le nœud sans organization_id en retour : {resultat}")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : création d'organisation sur le nœud sans "
+                "organization_id en retour : %s", resultat,
+            )
             return None
-        print(f"  [RUDI] organisation « {org_name} » créée sur le nœud "
-              f"(uuid={org_id}, statut={resultat.get('organization_status')}) — relais portail "
-              f"synchrone déjà effectué (voir docstring).")
+        logger.info(
+            "  [RUDI] organisation « %s » créée sur le nœud (uuid=%s, statut=%s) — relais "
+            "portail synchrone déjà effectué (voir docstring).",
+            org_name, org_id, resultat.get("organization_status"),
+        )
         return org_id
     except Exception as e:
         # Échec de création : peut être un vrai échec (nœud injoignable, portail en
@@ -619,11 +630,13 @@ def demander_creation_organisation(conf: dict, organization: dict) -> str | None
         except Exception:
             deja_creee = None
         if deja_creee:
-            print(f"  [RUDI] organisation « {org_name} » déjà créée (tentative précédente, "
-                  f"id déterministe retrouvé) — pas de doublon, réutilisation de "
-                  f"uuid={org_id_attendu}.")
+            logger.info(
+                "  [RUDI] organisation « %s » déjà créée (tentative précédente, id "
+                "déterministe retrouvé) — pas de doublon, réutilisation de uuid=%s.",
+                org_name, org_id_attendu,
+            )
             return org_id_attendu
-        print(f"  [RUDI] AVERTISSEMENT : échec de la création d'organisation sur le nœud : {e}")
+        logger.warning("  [RUDI] AVERTISSEMENT : échec de la création d'organisation sur le nœud : %s", e)
         return None
 
 
@@ -710,7 +723,7 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
         usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande d'archivage envoyée ({e})")
+        logger.warning("  [RUDI] AVERTISSEMENT : auth portail échouée, pas de demande d'archivage envoyée (%s)", e)
         return False
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -718,8 +731,10 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
         r = session.get(f"{base}/strukture/v1/organizations/request/{organization_id}",
                         headers=headers, timeout=30)
         if r.status_code != 200:
-            print(f"  [RUDI] AVERTISSEMENT : organisation « {organization_name} » inconnue du portail "
-                  f"({r.status_code}), pas de demande d'archivage envoyée")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : organisation « %s » inconnue du portail (%s), "
+                "pas de demande d'archivage envoyée", organization_name, r.status_code,
+            )
             return False
         description = r.json().get("organization_summary") or organization_name
 
@@ -734,8 +749,10 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
         r = session.post(f"{base}/strukture/v1/organizations/tasks", json=brouillon,
                          headers=headers, timeout=30)
         if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : création du brouillon d'archivage refusée "
-                  f"par le portail ({r.status_code}) : {r.text[:200]}")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : création du brouillon d'archivage refusée "
+                "par le portail (%s) : %s", r.status_code, r.text[:200],
+            )
             return False
         tache = r.json()
         tache.setdefault("asset", {})["form"] = form
@@ -743,14 +760,18 @@ def demander_archivage_organisation(conf: dict, organization_id: str, organizati
         r = session.put(f"{base}/strukture/v1/organizations/tasks/start", json=tache,
                         headers=headers, timeout=30)
         if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : démarrage de la demande d'archivage refusé "
-                  f"par le portail ({r.status_code}) : {r.text[:200]}")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : démarrage de la demande d'archivage refusé "
+                "par le portail (%s) : %s", r.status_code, r.text[:200],
+            )
             return False
-        print(f"  [RUDI] demande d'archivage portail déposée pour l'organisation « {organization_name} » "
-              f"(en attente de validation modérateur)")
+        logger.info(
+            "  [RUDI] demande d'archivage portail déposée pour l'organisation « %s » "
+            "(en attente de validation modérateur)", organization_name,
+        )
         return True
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec de la demande d'archivage portail : {e}")
+        logger.warning("  [RUDI] AVERTISSEMENT : échec de la demande d'archivage portail : %s", e)
         return False
 
 
@@ -880,14 +901,19 @@ def demander_detachement_producteur(conf: dict, organization_id: str) -> bool | 
         writer.connector.request(
             relative_url=f"catalog/portal/organizations/{organization_id}/detach",
             req_method="GET", headers=writer.connector._id_headers)
-        print(f"  [RUDI] demande de détachement producteur envoyée pour l'organisation {organization_id[:12]}… "
-              f"— validation modérateur nécessaire avant suppression.")
+        logger.info(
+            "  [RUDI] demande de détachement producteur envoyée pour l'organisation %s… "
+            "— validation modérateur nécessaire avant suppression.", organization_id[:12],
+        )
         return True
     except Exception as e:
         if getattr(e, "status", None) == 409:
-            print(f"  [RUDI] détachement producteur de l'organisation {organization_id[:12]}… déjà en attente de validation.")
+            logger.info(
+                "  [RUDI] détachement producteur de l'organisation %s… déjà en attente de validation.",
+                organization_id[:12],
+            )
             return True
-        print(f"  [RUDI] AVERTISSEMENT : échec de la demande de détachement producteur : {e}")
+        logger.warning("  [RUDI] AVERTISSEMENT : échec de la demande de détachement producteur : %s", e)
         return False
 
 
@@ -933,7 +959,10 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
         usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression d'organisation envoyée ({e})")
+        logger.warning(
+            "  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression "
+            "d'organisation envoyée (%s)", e,
+        )
         return False
 
     def _delete(jeton: str):
@@ -949,13 +978,16 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
             indice_409 = (" — producteur probablement encore rattaché : appeler "
                           "demander_detachement_producteur() d'abord, le faire valider par un "
                           "modérateur, puis réessayer") if r.status_code == 409 else ""
-            print(f"  [RUDI] AVERTISSEMENT : suppression d'organisation {organization_id[:12]}… refusée "
-                  f"par le portail ({r.status_code}){indice_409} : {r.text[:200]}")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : suppression d'organisation %s… refusée par "
+                "le portail (%s)%s : %s",
+                organization_id[:12], r.status_code, indice_409, r.text[:200],
+            )
             return False
-        print(f"  [RUDI] suppression portail demandée pour l'organisation {organization_id[:12]}…")
+        logger.info("  [RUDI] suppression portail demandée pour l'organisation %s…", organization_id[:12])
         return True
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec de la suppression portail de l'organisation : {e}")
+        logger.warning("  [RUDI] AVERTISSEMENT : échec de la suppression portail de l'organisation : %s", e)
         return False
 
 
@@ -1077,9 +1109,9 @@ def publier_dataset(
             try:
                 writer.connector.put_catalog("organizations", org_mise_a_jour)
                 org_existante = org_mise_a_jour
-                print(f"  [RUDI] organisation « {org_name} » enrichie (caption + summary)")
+                logger.info("  [RUDI] organisation « %s » enrichie (caption + summary)", org_name)
             except Exception as e:
-                print(f"  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « {org_name} » : {e}")
+                logger.warning("  [RUDI] AVERTISSEMENT : impossible d'enrichir l'org « %s » : %s", org_name, e)
             # Propagation au portail désactivée (2026-10-15) : demander_mise_a_jour_organisation()
             # est signalée cassée par l'équipe RUDI elle-même. Le PUT nœud ci-dessus ne touche
             # que la copie locale — l'UI Strukture garde l'ancienne description tant que cette
@@ -1107,8 +1139,10 @@ def publier_dataset(
     # theme : vérifie que la valeur est dans les thèmes acceptés par ce nœud
     themes_valides = writer.themes or []
     if themes_valides and rudi_metadata.get("theme") not in themes_valides:
-        print(f"  [RUDI] AVERTISSEMENT : thème '{rudi_metadata.get('theme')}' non reconnu par le nœud. "
-              f"Thèmes valides : {themes_valides}. Précisez 'theme' dans datasets.py.")
+        logger.error(
+            "  [RUDI] AVERTISSEMENT : thème '%s' non reconnu par le nœud. Thèmes valides : "
+            "%s. Précisez 'theme' dans datasets.py.", rudi_metadata.get("theme"), themes_valides,
+        )
         raise ValueError(f"Thème RUDI invalide pour ce nœud : {rudi_metadata.get('theme')!r}")
 
     # contacts : le nœud exige au moins un contact avec email valide. Le nœud déduplique
@@ -1139,8 +1173,10 @@ def publier_dataset(
 
     medias_dedoublonnes, fichiers_alignes = _dedoublonner_medias_file(medias, fichiers_filtres)
     if len(medias_dedoublonnes) != len(medias):
-        print(f"  [RUDI] {len(medias) - len(medias_dedoublonnes)} média(s) FILE dupliqué(s) "
-              f"retiré(s) (sinon bug portail A7 « Duplicate key » → ERR-500).")
+        logger.warning(
+            "  [RUDI] %d média(s) FILE dupliqué(s) retiré(s) (sinon bug portail A7 "
+            "« Duplicate key » → ERR-500).", len(medias) - len(medias_dedoublonnes),
+        )
         medias[:] = medias_dedoublonnes
         fichiers_filtres = fichiers_alignes
 
@@ -1153,13 +1189,13 @@ def publier_dataset(
 
     for i, chemin in enumerate(fichiers_filtres):
         if not os.path.isfile(chemin):
-            print(f"  [RUDI] fichier introuvable, ignoré : {chemin}")
+            logger.warning("  [RUDI] fichier introuvable, ignoré : %s", chemin)
             continue
         nom = os.path.basename(chemin)
         media_id = _media_id_v4(existant, medias[i].get("media_name", nom))
         medias[i]["media_id"] = media_id
         caption = medias[i].get("media_caption", "")
-        print(f"  [RUDI] upload {nom} (media_id={media_id[:8]}…)")
+        logger.info("  [RUDI] upload %s (media_id=%s…)", nom, media_id[:8])
         media_info: RudiMediaFile | None = None
         derniere_erreur: Exception | None = None
         # Le commit peut échouer par un aléa transitoire côté nœud ("could not commit
@@ -1178,7 +1214,7 @@ def publier_dataset(
                 if "too big to be uploaded" in str(e):
                     break
                 if "time exceeded" in str(e) and tentative == 0:
-                    print(f"  [RUDI] commit de {nom} expiré côté nœud, nouvelle tentative…")
+                    logger.warning("  [RUDI] commit de %s expiré côté nœud, nouvelle tentative…", nom)
                     time.sleep(5)
                     continue
                 if "time exceeded" not in str(e):
@@ -1198,15 +1234,17 @@ def publier_dataset(
                     f"{derniere_erreur}"
                 ) from derniere_erreur
             taille_mo = os.path.getsize(chemin) / 1_048_576
-            print(f"  [RUDI] {nom} ({taille_mo:.0f} Mo) dépasse la limite de taille du "
-                  f"nœud — média écarté, le reste du dataset est publié quand même.")
+            logger.warning(
+                "  [RUDI] %s (%.0f Mo) dépasse la limite de taille du nœud — média "
+                "écarté, le reste du dataset est publié quand même.", nom, taille_mo,
+            )
             noms_ecartes.add(nom)
             continue
         # Remplace le media dict par celui retourné (contient file_type, file_size, checksum…)
         medias[i] = json.loads(str(media_info))
         if caption:
             medias[i]["media_caption"] = caption
-        print(f"  [RUDI] URL storage : {medias[i]['connector']['url']}")
+        logger.info("  [RUDI] URL storage : %s", medias[i]["connector"]["url"])
 
     # Nettoyage Local→Rudi : retirer les médias FILE dont le fichier local a disparu
     # ou dont l'upload a été écarté ci-dessus (trop volumineux pour le nœud) — sauf un
@@ -1227,9 +1265,9 @@ def publier_dataset(
         if m.get("media_type") != "FILE":
             m["media_id"] = _media_id_v4(existant, m.get("media_name", ""))
 
-    print(f"  [RUDI] push métadonnées (local_id={local_id[:8]}…)")
+    logger.info("  [RUDI] push métadonnées (local_id=%s…)", local_id[:8])
     _put_metadata(writer, rudi_metadata)
-    print(f"  [RUDI] publié.")
+    logger.info("  [RUDI] publié.")
 
 
 def supprimer_organisation(conf: dict, org_id: str) -> bool:
@@ -1242,13 +1280,13 @@ def supprimer_organisation(conf: dict, org_id: str) -> bool:
     writer = _creer_writer(conf)
     try:
         writer.connector.delete_org_with_id(org_id)
-        print(f"  [RUDI] organisation {org_id[:12]}… supprimée du nœud.")
+        logger.info("  [RUDI] organisation %s… supprimée du nœud.", org_id[:12])
         return True
     except Exception as e:
         if getattr(e, "status", None) == 404:
-            print(f"  [RUDI] organisation {org_id[:12]}… déjà absente du nœud (traité comme succès).")
+            logger.info("  [RUDI] organisation %s… déjà absente du nœud (traité comme succès).", org_id[:12])
             return True
-        print(f"  [RUDI] Erreur suppression organisation {org_id[:12]}… : {e}")
+        logger.error("  [RUDI] Erreur suppression organisation %s… : %s", org_id[:12], e)
         return False
 
 
@@ -1262,13 +1300,13 @@ def supprimer_dataset(conf: dict, global_id: str) -> bool:
     writer = _creer_writer(conf)
     try:
         writer.connector.del_catalog(f"resources/{global_id}")
-        print(f"  [RUDI] dataset {global_id[:12]}… supprimé du nœud.")
+        logger.info("  [RUDI] dataset %s… supprimé du nœud.", global_id[:12])
         return True
     except Exception as e:
         if getattr(e, "status", None) == 404:
-            print(f"  [RUDI] dataset {global_id[:12]}… déjà absent du nœud (traité comme succès).")
+            logger.info("  [RUDI] dataset %s… déjà absent du nœud (traité comme succès).", global_id[:12])
             return True
-        print(f"  [RUDI] Erreur suppression {global_id[:12]}… : {e}")
+        logger.error("  [RUDI] Erreur suppression %s… : %s", global_id[:12], e)
         return False
 
 
@@ -1323,7 +1361,10 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
         usr_portail, pwd_portail = _identifiants_portail(conf)
         token = _token_portail(url_portail, usr_portail, pwd_portail)
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression portail de la ressource ({e})")
+        logger.warning(
+            "  [RUDI] AVERTISSEMENT : auth portail échouée, pas de suppression "
+            "portail de la ressource (%s)", e,
+        )
         return False
 
     def _delete(jeton: str):
@@ -1336,11 +1377,16 @@ def supprimer_dataset_portail(conf: dict, global_id: str) -> bool | None:
             token = _token_portail(url_portail, usr_portail, pwd_portail, forcer_renouvellement=True)
             r = _delete(token)
         if r.status_code >= 400:
-            print(f"  [RUDI] AVERTISSEMENT : suppression portail de {global_id[:12]}… refusée "
-                  f"({r.status_code}) : {r.text[:200]}")
+            logger.warning(
+                "  [RUDI] AVERTISSEMENT : suppression portail de %s… refusée (%s) : %s",
+                global_id[:12], r.status_code, r.text[:200],
+            )
             return False
-        print(f"  [RUDI] suppression portail demandée pour {global_id[:12]}… (traitement Kalim asynchrone).")
+        logger.info(
+            "  [RUDI] suppression portail demandée pour %s… (traitement Kalim asynchrone).",
+            global_id[:12],
+        )
         return True
     except Exception as e:
-        print(f"  [RUDI] AVERTISSEMENT : échec de la suppression portail de {global_id[:12]}… : {e}")
+        logger.warning("  [RUDI] AVERTISSEMENT : échec de la suppression portail de %s… : %s", global_id[:12], e)
         return False

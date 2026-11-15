@@ -11,9 +11,12 @@ Usage :
     rudi_publie = publier_si_configue(conf, rudi_metadata, fichiers_filtres)
 """
 
+import logging
 import threading
 
 from .rudi_client import noeud_pret, publier_dataset
+
+logger = logging.getLogger(__name__)
 
 # Les publications peuvent arriver depuis plusieurs threads (workers d'un harvest
 # parallélisé). Le get_or_create d'organisations/contacts côté nœud n'est pas
@@ -66,14 +69,14 @@ def publier_si_configue(conf: dict | None, rudi_metadata: dict,
     ou si le nœud n'est pas configuré.
     """
     if not conf:
-        print("  [RUDI] conf absente — publication ignorée.")
+        logger.warning("  [RUDI] conf absente — publication ignorée.")
         return False
 
     # Sonde préalable : un nœud injoignable échouerait de toute façon, mais après le
     # retry/backoff de la lib de publication et sur une trace peu lisible. Un éventuel
     # rattrapage reprendra ce False au prochain passage.
     if not noeud_pret(conf):
-        print("  [RUDI] nœud injoignable — publication différée.")
+        logger.warning("  [RUDI] nœud injoignable — publication différée.")
         return False
 
     try:
@@ -81,8 +84,8 @@ def publier_si_configue(conf: dict | None, rudi_metadata: dict,
             publier_dataset(conf=conf, rudi_metadata=rudi_metadata,
                             fichiers_filtres=fichiers_filtres)
         enregistrer_local_id_publie(rudi_metadata.get("local_id"))
-        print("  [RUDI] Publié.")
+        logger.info("  [RUDI] Publié.")
         return True
     except Exception as e:
-        print(f"  [RUDI] Erreur publication : {e}")
+        logger.error("  [RUDI] Erreur publication : %s", e)
         return False

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import os
 import time
 import uuid
@@ -24,6 +25,8 @@ import uuid
 import requests
 
 from .http import session
+
+logger = logging.getLogger(__name__)
 
 TTL_JOURS_DEFAUT = 30
 _TAILLE_MORCEAU = 1024 * 1024
@@ -108,10 +111,10 @@ def telecharger(
         if not _est_expire(chemin, ttl_jours):
             if verbose:
                 taille_mo = os.path.getsize(chemin) / 1024 / 1024
-                print(f"  Cache ({taille_mo:.1f} Mo) : {url}")
+                logger.info("  Cache (%.1f Mo) : %s", taille_mo, url)
             return chemin
         if verbose:
-            print(f"  Cache expiré, re-téléchargement : {url}")
+            logger.info("  Cache expiré, re-téléchargement : %s", url)
         # Bug réel corrigé le 2026-11-14 : supprimer le cache expiré ICI, avant même
         # la tentative réseau, laissait sans aucun cache en cas de coupure (timeout,
         # 5xx) — le `os.replace(chemin_tmp, chemin)` plus bas écrase déjà l'ancien
@@ -160,7 +163,7 @@ def telecharger(
             if validateur is None:
                 validateur = reponse.headers.get("ETag") or reponse.headers.get("Last-Modified")
             elif verbose and deja_recus:
-                print("\n  Reprise refusée par le serveur — nouveau téléchargement complet.")
+                logger.warning("\n  Reprise refusée par le serveur — nouveau téléchargement complet.")
 
         try:
             with open(chemin_tmp, mode_ecriture) as fichier:
@@ -173,7 +176,7 @@ def telecharger(
                         print(f"  {total / 1024 / 1024:.1f} Mo…", end="\r")
                     if plafond_mo is not None and total >= plafond_mo * 1024 * 1024:
                         if verbose:
-                            print(f"\n  Plafond {plafond_mo} Mo atteint — fichier partiel.")
+                            logger.warning("\n  Plafond %s Mo atteint — fichier partiel.", plafond_mo)
                         break
             os.replace(chemin_tmp, chemin)
         except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
@@ -181,8 +184,11 @@ def telecharger(
             # reprendre à partir de ``total`` octets déjà écrits.
             if tentative < _MAX_TENTATIVES_FLUX:
                 if verbose:
-                    print(f"\n  Connexion coupée en cours de flux ({e}) — nouvelle "
-                          f"tentative avec reprise ({tentative + 1}/{_MAX_TENTATIVES_FLUX})…")
+                    logger.warning(
+                        "\n  Connexion coupée en cours de flux (%s) — nouvelle "
+                        "tentative avec reprise (%d/%d)…",
+                        e, tentative + 1, _MAX_TENTATIVES_FLUX,
+                    )
                 time.sleep(_PAUSE_ENTRE_TENTATIVES_S)
                 continue
             try:
@@ -206,7 +212,7 @@ def telecharger(
         break  # succès — pas besoin d'une autre tentative
 
     if verbose:
-        print(f"\n  Téléchargé : {chemin} ({total / 1024 / 1024:.1f} Mo)")
+        logger.info("\n  Téléchargé : %s (%.1f Mo)", chemin, total / 1024 / 1024)
     return chemin
 
 

@@ -961,13 +961,11 @@ class TestDemanderSuppressionOrganisation(unittest.TestCase):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up",
                 "url_portail": "http://portail.test"}
         with mock.patch("rudi_harvest_toolkit.rudi_client.session") as sess, \
-             mock.patch("builtins.print") as m_print:
+             self.assertLogs("rudi_harvest_toolkit.rudi_client", level="WARNING") as logs:
             self.assertFalse(demander_suppression_organisation(conf, "uuid-portail"))
         sess.delete.assert_not_called()
         sess.post.assert_not_called()
-        self.assertTrue(
-            any("pwd_portail" in str(appel) for appel in m_print.call_args_list)
-        )
+        self.assertTrue(any("pwd_portail" in message for message in logs.output))
 
     def test_succes_emet_un_delete_vers_organizations_request_uuid(self):
         conf = {"url": "http://n:3032", "usr": "u", "pwd": "p", "usr_portail": "up", "pwd_portail": "pp",
