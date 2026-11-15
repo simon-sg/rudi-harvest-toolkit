@@ -962,6 +962,18 @@ def demander_suppression_organisation(conf: dict, organization_id: str) -> bool 
     de la suppression d'organisation (équivalent pour les organisations de ce que
     ``supprimer_dataset_portail()`` est aux datasets).
 
+    **Dangereuse par construction — préférer systématiquement
+    :func:`demander_archivage_organisation` quand c'est possible.** Confirmé le
+    2026-11-15 en lisant le code source réel du portail
+    (``OrganizationsController.requestOrganizationDelete`` →
+    ``OrganizationServiceImpl.deleteOrganization``) : cette route court-circuite
+    entièrement le moteur BPMN, donc **aucun** des 3 contrôles métier que l'archivage
+    applique (``OrganizationTaskServiceImpl.checkEntityStatus``) — pas de vérification
+    de JDD encore publiés côté portail, pas de vérification d'un rattachement/
+    détachement en cours, pas de vérification d'une demande de réutilisation en cours.
+    Seule la contrainte FK ``linked_producer`` ci-dessous reste vérifiée (c'est une
+    contrainte de base de données, pas un contrôle métier applicatif).
+
     **Prérequis : détacher le producteur d'abord si l'organisation en a un.** La
     suppression est appliquée directement côté service (``OrganizationServiceImpl.
     deleteOrganization``, pas de tâche BPMN pour la suppression elle-même — comme la

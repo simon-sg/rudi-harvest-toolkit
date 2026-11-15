@@ -174,19 +174,30 @@ Sans objet pour un nœud/portail externes réels (pas de conteneurs à notre cha
 applicatif). Sans cet appel, l'organisation reste présente dans l'UI Strukture / le
 référentiel du portail après sa suppression côté nœud.
 
-**Statut inconnu, non retesté avec les bons identifiants (voir règle 4 plus haut) — et
-sans objet en pratique.** Contrairement à `supprimer_dataset_portail()` (datasets, voir
-la section suivante), il n'existe **aucun relais nœud** équivalent pour cette opération
-précise : le nœud ne relaie que les actes `attach`/`detach`/`has_task` pour les
-organisations, jamais la suppression (vérifié dans `rudi-catalog/src/routes/routes.js`,
-aucune route `delete` pour `portal/organizations/:id`, y compris sur la branche de
-production RM/R7). `demander_archivage_organisation()` (section dédiée plus bas)
-fonctionne mécaniquement pour cette opération, confirmé de bout en bout le 2026-11-14,
-mais exige les identifiants PROVIDER du raccordement nœud↔portail — jamais disponibles
-pour `rudi-commune-starterkit` (voir règle 4 plus haut), qui ne l'appelle donc **pas**.
-Fonction conservée ici pour compatibilité (d'autres appelants, ex.
-`moissonneuse-batteuse`) et au cas où l'appel direct serait un jour nécessaire pour qui
-administre effectivement le nœud.
+**Dangereuse par construction, pas seulement incertaine — ne jamais l'utiliser comme
+raccourci à la place de l'archivage, même avec les bons identifiants PROVIDER.**
+Confirmé le 2026-11-15 en lisant le code source réel du portail
+(`OrganizationsController.requestOrganizationDelete` → `OrganizationServiceImpl.
+deleteOrganization`) : cette route supprime l'entité **directement en base**, sans
+jamais passer par le moteur BPMN — donc **sans aucun des 3 contrôles métier** que
+l'archivage applique (`OrganizationTaskServiceImpl.checkEntityStatus`) : pas de
+vérification de JDD encore publiés, pas de vérification d'un rattachement/détachement
+en cours, pas de vérification d'une demande de réutilisation en cours. Elle contourne
+aussi la validation modérateur, le détachement explicite des producteurs restants et
+la suppression du logo que l'archivage effectue. `demander_archivage_organisation()`
+(section dédiée plus bas) est le chemin sûr — à préférer systématiquement.
+
+Contrairement à `supprimer_dataset_portail()` (datasets, voir la section suivante), il
+n'existe **aucun relais nœud** équivalent pour cette opération précise : le nœud ne
+relaie que les actes `attach`/`detach`/`has_task` pour les organisations, jamais la
+suppression (vérifié dans `rudi-catalog/src/routes/routes.js`, aucune route `delete`
+pour `portal/organizations/:id`, y compris sur la branche de production RM/R7).
+`demander_archivage_organisation()` fonctionne mécaniquement, confirmé de bout en bout
+le 2026-11-14, mais exige les identifiants PROVIDER du raccordement nœud↔portail —
+jamais disponibles pour `rudi-commune-starterkit` (voir règle 4 plus haut), qui ne
+l'appelle donc **pas**. Fonction conservée ici pour compatibilité (d'autres appelants,
+ex. `moissonneuse-batteuse`) et au cas où l'appel direct serait un jour nécessaire pour
+qui administre effectivement le nœud — mais l'archivage doit rester le premier choix.
 
 Contrairement à la création (tâche BPMN + validation modérateur), la suppression de
 l'organisation elle-même est appliquée **directement** (aucune validation côté Strukture).
